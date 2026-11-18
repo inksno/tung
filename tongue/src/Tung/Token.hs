@@ -5,7 +5,9 @@
 module Tung.Token
   ( utf16Width,
     utf16Length,
-    Token (TIdent, TNatural, TInteger, TFloat, TUnicode, TText, TBraceKeyword, TLet, TFix, TExport, TImport, TType, TYield, TForeign, TClass, TInstance, TMatch, TSorry, TOrsend, TInduce, TFunction, TLParen, TRParen, TLBracket, TRBracket, TLBrace, TRBrace, TColon, TComma, TSemicolon, TDot, TMapsTo, TEquals, TKindStar, TDollar, TAt),
+    Token (TIdent, TNatural, TInteger, TFloat, TUnicode, TText, TBraceKeyword, TLet, TFix, TExport, TImport, TType, TYield, TForeign, TClass, TInstance, TMatch, TSorry, TAxiom, TInduce, TFunction, TLParen, TRParen, TLBracket, TRBracket, TLBrace, TRBrace, TColon, TComma, TSemicolon, TDot, TMapsTo, TEquals, TKindStar, TDollar, TAt),
+    closingBracket,
+    isClosingBracket,
     SourceSpan (..),
     LocatedToken (..),
     Piece (..),
@@ -31,6 +33,7 @@ import Data.Bifunctor (first)
 import Data.Char (chr, isSpace, ord)
 import Data.Either (fromRight)
 import Data.IntMap.Strict qualified as IntMap
+import Data.List (mapAccumL)
 import Data.List.NonEmpty qualified as NE
 import Data.Maybe (fromMaybe, isJust)
 import Data.Void (Void)
@@ -76,7 +79,7 @@ data TokenKind
   | KTInstance
   | KTMatch
   | KTSorry
-  | KTOrsend
+  | KTAxiom
   | KTInduce
   | KTFunction
   | KTBraceKeyword String
@@ -103,42 +106,24 @@ instance Eq Token where
 instance Show Token where
   show (Token _ kind) = drop 1 (show kind)
 
-pattern TIdent :: String -> Token
-pattern TIdent name <- Token _ (KTIdent name)
-  where
-    TIdent name = Token Nothing (KTIdent name)
+pattern TIdent, TText, TBraceKeyword :: String -> Token
+pattern TIdent name <- Token _ (KTIdent name) where TIdent name = Token Nothing (KTIdent name)
+pattern TText value <- Token _ (KTText value) where TText value = Token Nothing (KTText value)
+pattern TBraceKeyword name <- Token _ (KTBraceKeyword name) where TBraceKeyword name = Token Nothing (KTBraceKeyword name)
 
 pattern TNatural :: Natural -> Token
-pattern TNatural value <- Token _ (KTNatural value)
-  where
-    TNatural value = Token Nothing (KTNatural value)
+pattern TNatural value <- Token _ (KTNatural value) where TNatural value = Token Nothing (KTNatural value)
 
 pattern TInteger :: Integer -> Token
-pattern TInteger value <- Token _ (KTInteger value)
-  where
-    TInteger value = Token Nothing (KTInteger value)
+pattern TInteger value <- Token _ (KTInteger value) where TInteger value = Token Nothing (KTInteger value)
 
 pattern TFloat :: Double -> Token
-pattern TFloat value <- Token _ (KTFloat value)
-  where
-    TFloat value = Token Nothing (KTFloat value)
+pattern TFloat value <- Token _ (KTFloat value) where TFloat value = Token Nothing (KTFloat value)
 
 pattern TUnicode :: Char -> Token
-pattern TUnicode value <- Token _ (KTUnicode value)
-  where
-    TUnicode value = Token Nothing (KTUnicode value)
+pattern TUnicode value <- Token _ (KTUnicode value) where TUnicode value = Token Nothing (KTUnicode value)
 
-pattern TText :: String -> Token
-pattern TText value <- Token _ (KTText value)
-  where
-    TText value = Token Nothing (KTText value)
-
-pattern TBraceKeyword :: String -> Token
-pattern TBraceKeyword name <- Token _ (KTBraceKeyword name)
-  where
-    TBraceKeyword name = Token Nothing (KTBraceKeyword name)
-
-pattern TLet, TFix, TExport, TImport, TType, TYield, TForeign, TClass, TInstance, TMatch, TSorry, TOrsend, TInduce, TFunction, TLParen, TRParen, TLBracket, TRBracket, TLBrace, TRBrace, TColon, TComma, TSemicolon, TDot, TMapsTo, TEquals, TKindStar, TDollar, TAt :: Token
+pattern TLet, TFix, TExport, TImport, TType, TYield, TForeign, TClass, TInstance, TMatch, TSorry, TAxiom, TInduce, TFunction, TLParen, TRParen, TLBracket, TRBracket, TLBrace, TRBrace, TColon, TComma, TSemicolon, TDot, TMapsTo, TEquals, TKindStar, TDollar, TAt :: Token
 pattern TLet <- Token _ KTLet where TLet = Token Nothing KTLet
 pattern TFix <- Token _ KTFix where TFix = Token Nothing KTFix
 pattern TExport <- Token _ KTExport where TExport = Token Nothing KTExport
@@ -150,7 +135,7 @@ pattern TClass <- Token _ KTClass where TClass = Token Nothing KTClass
 pattern TInstance <- Token _ KTInstance where TInstance = Token Nothing KTInstance
 pattern TMatch <- Token _ KTMatch where TMatch = Token Nothing KTMatch
 pattern TSorry <- Token _ KTSorry where TSorry = Token Nothing KTSorry
-pattern TOrsend <- Token _ KTOrsend where TOrsend = Token Nothing KTOrsend
+pattern TAxiom <- Token _ KTAxiom where TAxiom = Token Nothing KTAxiom
 pattern TInduce <- Token _ KTInduce where TInduce = Token Nothing KTInduce
 pattern TFunction <- Token _ KTFunction where TFunction = Token Nothing KTFunction
 pattern TLParen <- Token _ KTLParen where TLParen = Token Nothing KTLParen
@@ -169,7 +154,19 @@ pattern TKindStar <- Token _ KTKindStar where TKindStar = Token Nothing KTKindSt
 pattern TDollar <- Token _ KTDollar where TDollar = Token Nothing KTDollar
 pattern TAt <- Token _ KTAt where TAt = Token Nothing KTAt
 
-{-# COMPLETE TIdent, TNatural, TInteger, TFloat, TUnicode, TText, TBraceKeyword, TLet, TFix, TExport, TImport, TType, TYield, TForeign, TClass, TInstance, TMatch, TSorry, TOrsend, TInduce, TFunction, TLParen, TRParen, TLBracket, TRBracket, TLBrace, TRBrace, TColon, TComma, TSemicolon, TDot, TMapsTo, TEquals, TKindStar, TDollar, TAt #-}
+{-# COMPLETE TIdent, TNatural, TInteger, TFloat, TUnicode, TText, TBraceKeyword, TLet, TFix, TExport, TImport, TType, TYield, TForeign, TClass, TInstance, TMatch, TSorry, TAxiom, TInduce, TFunction, TLParen, TRParen, TLBracket, TRBracket, TLBrace, TRBrace, TColon, TComma, TSemicolon, TDot, TMapsTo, TEquals, TKindStar, TDollar, TAt #-}
+
+-- the token that closeth an opening bracket; a brace keyword openeth a brace.
+closingBracket :: Token -> Maybe Token
+closingBracket = \case
+  TLParen -> Just TRParen
+  TLBracket -> Just TRBracket
+  TLBrace -> Just TRBrace
+  TBraceKeyword _ -> Just TRBrace
+  _ -> Nothing
+
+isClosingBracket :: Token -> Bool
+isClosingBracket token = token `elem` [TRParen, TRBracket, TRBrace]
 
 tokenSpan :: Token -> Maybe SourceSpan
 tokenSpan (Token cursor _) = (\(TokenCursor span _ _) -> span) <$> cursor
@@ -236,7 +233,7 @@ data Placement = Leading | Trailing
   deriving (Eq, Show)
 
 lexPieces :: String -> [Piece]
-lexPieces source = place False False (map locate raw)
+lexPieces source = snd (mapAccumL place (False, False) (map locate raw))
   where
     raw = fromRight [] (M.parse (concat <$> many (M.try ((: []) <$> piece) M.<|> unlexed)) "source" source)
     offsets = utf16Offsets source
@@ -252,13 +249,12 @@ lexPieces source = place False False (map locate raw)
       kind <- M.choice [Space <$ C.space1, Comment Leading <$ lineComment, Comment Leading <$ blockComment, Lexeme <$> rawTokenParser]
       finish <- M.getOffset
       pure (start, finish, kind)
-    place afterToken sameLine = \case
-      [] -> []
-      current@Piece {pieceKind, pieceText} : others -> case pieceKind of
-        Lexeme _ -> current : place True True others
-        Space -> current : place afterToken (sameLine && '\n' `notElem` pieceText) others
-        Comment _ | afterToken && sameLine -> current {pieceKind = Comment Trailing} : place afterToken False others
-        _ -> current : place afterToken False others
+    -- the state is whether a token came before, and whether this is still its line.
+    place (afterToken, sameLine) current@Piece {pieceKind, pieceText} = case pieceKind of
+      Lexeme _ -> ((True, True), current)
+      Space -> ((afterToken, sameLine && '\n' `notElem` pieceText), current)
+      Comment _ | afterToken && sameLine -> ((afterToken, False), current {pieceKind = Comment Trailing})
+      _ -> ((afterToken, False), current)
 
 -- the tokens of the pieces, each knowing the end of the token before it.
 piecesTokens :: [Piece] -> [LocatedToken]
@@ -441,7 +437,7 @@ keywordTokens =
     ("bizen", TInstance),
     ("match", TMatch),
     ("sorry", TSorry),
-    ("axiom", TOrsend),
+    ("axiom", TAxiom),
     ("unbuild", TInduce),
     ("function", TFunction)
   ]

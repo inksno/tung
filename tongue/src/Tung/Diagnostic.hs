@@ -1,11 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | structured source diagnostics for command-line and editor clients.
+-- | what command-line and editor clients print: structured source
+-- diagnostics, goals, and the proof report of an audit.
 module Tung.Diagnostic
   ( Diagnostic (..),
     DiagnosticKind (..),
     failureDiagnostic,
     renderFileDiagnostic,
+    goalMessage,
+    goalDiagnostics,
+    proofReport,
   )
 where
 
@@ -13,7 +17,7 @@ import Data.Aeson (ToJSON (..), object, (.=))
 import Data.List (intercalate)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
-import Tung.Dependent.Source (CompileFailure (..), FailureKind (..))
+import Tung.Source (CompileFailure (..), DependencyKind (..), FailureKind (..), Hole (..), ProofAudit, ProofDependency (..), auditDependencies, auditName, auditType)
 import Tung.Token (SourceSpan (..), utf16Length, utf16Width)
 
 data DiagnosticKind = ParseDiagnostic | TypeDiagnostic | GoalDiagnostic
@@ -38,7 +42,7 @@ instance ToJSON Diagnostic where
           ++ maybe [] (\path -> ["path" .= path]) diagnosticPath
       )
 
--- a dependent compile failure, located in the module that raised it. an
+-- a compile failure, located in the module that raised it. an
 -- unlocated infrastructure failure useth the start of that module's source.
 failureDiagnostic :: String -> Map.Map String String -> CompileFailure -> Diagnostic
 failureDiagnostic source imports CompileFailure {failureKind, failurePath, failureSpan, failureText} =
@@ -56,16 +60,38 @@ renderFileDiagnostic path source Diagnostic {diagnosticSpan = SourceSpan start e
     (endLine, endColumn) = sourcePosition source end
 
 sourcePosition :: String -> Int -> (Int, Int)
-sourcePosition source wanted = go 0 1 1 source
+sourcePosition source wanted = foldl' advance (1, 1) (map snd (takeWhile ((< wanted) . fst) (zip offsets source)))
   where
-    go _ line column [] = (line, column)
-    go offset line column _ | offset >= wanted = (line, column)
-    go offset line _ ('\n' : rest) = go (offset + 1) (line + 1) 1 rest
-    go offset line column (character : rest) =
-      let width = utf16Width character
-       in go (offset + width) line (column + width) rest
+    offsets = scanl (+) 0 (map utf16Width source)
+    advance (line, _) '\n' = (line + 1, 1)
+    advance (line, column) character = (line, column + utf16Width character)
 
 renderKind :: DiagnosticKind -> String
 renderKind ParseDiagnostic = "parse"
 renderKind TypeDiagnostic = "type"
 renderKind GoalDiagnostic = "goal"
+
+-- a goal line, then each named local of its context, outermost first.
+goalMessage :: Hole -> String
+goalMessage Hole {holeGoal, holeContext} =
+  intercalate "\n" (("goal: " ++ holeGoal) : ["  " ++ name ++ ": " ++ ty | (name, ty) <- holeContext])
+
+-- goals use the same structured locations as errors; messages remain prose.
+goalDiagnostics :: [Hole] -> [Diagnostic]
+goalDiagnostics holes =
+  [Diagnostic GoalDiagnostic Nothing span (goalMessage hole) | hole@Hole {holeSpan = Just span} <- holes]
+
+-- the cli and editor share the compiler's complete, deterministic report.
+proofReport :: ProofAudit -> Either String () -> String
+proofReport audit verified =
+  unlines $
+    ["name: " ++ auditName audit, "type: " ++ auditType audit]
+      ++ (if null dependencies then ["dependencies: none"] else map dependencyReport dependencies)
+      ++ [either ("name error: " ++) (const "name ok") verified]
+  where
+    dependencies = auditDependencies audit
+    dependencyReport ProofDependency {dependencyName, dependencyType, dependencyKind} =
+      case dependencyKind of
+        SorryDependency -> "sorry: " ++ dependencyName ++ ": " ++ dependencyType
+        AxiomDependency -> "axiom: " ++ dependencyName ++ ": " ++ dependencyType
+        HostDependency key -> "host: " ++ dependencyName ++ " [" ++ key ++ "]: " ++ dependencyType

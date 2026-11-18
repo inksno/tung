@@ -23,10 +23,10 @@ import Data.Text.IO qualified as Text
 import System.Directory (canonicalizePath, doesFileExist, makeAbsolute)
 import System.FilePath (normalise, takeDirectory, (</>))
 import System.IO.Error (tryIOError)
-import Tung.Dependent.Source (SourceSnapshot, snapshotImportPaths, snapshotText, sourceSnapshot)
+import Tung.Source (SourceSnapshot, snapshotImportPaths, snapshotText, sourceSnapshot)
 
--- a root source and every source it reacheth, keyed by `use` path, with the
--- file each `use` path resolved to.
+-- a root source and every source it reacheth, keyed by `bring` path, with the
+-- file each `bring` path resolved to.
 data Project = Project
   { projectPath :: FilePath,
     projectSource :: String,
@@ -86,13 +86,7 @@ loadImport loading owner base importPath = do
   case candidates of
     [] -> refuse ("missing bring '" ++ importPath ++ "' from '" ++ owner ++ "'")
     [candidate] -> loadCandidate candidate
-    paths ->
-      refuse
-        ( "ambiguous bring '"
-            ++ importPath
-            ++ "' found at "
-            ++ intercalate ", " (map (\path -> "'" ++ path ++ "'") paths)
-        )
+    paths -> refuse ("ambiguous bring '" ++ importPath ++ "' found at " ++ intercalate ", " (map (\path -> "'" ++ path ++ "'") paths))
   where
     refuse = unless (loadingLenient loading) . failLoader
     loadCandidate candidate = do
@@ -101,27 +95,9 @@ loadImport loading owner base importPath = do
       ownerPath <- gets (fmap fst . find ((== absolute) . fst . snd) . Map.toList)
       case (known, ownerPath) of
         (Just (other, _), _)
-          | other /= absolute ->
-              refuse
-                ( "ambiguous bring '"
-                    ++ importPath
-                    ++ "' resolveth to both '"
-                    ++ other
-                    ++ "' and '"
-                    ++ absolute
-                    ++ "'"
-                )
+          | other /= absolute -> refuse ("ambiguous bring '" ++ importPath ++ "' resolveth to both '" ++ other ++ "' and '" ++ absolute ++ "'")
         (_, Just other)
-          | other /= importPath ->
-              refuse
-                ( "bring paths '"
-                    ++ other
-                    ++ "' and '"
-                    ++ importPath
-                    ++ "' resolveth to the same file '"
-                    ++ absolute
-                    ++ "'"
-                )
+          | other /= importPath -> refuse ("bring paths '" ++ other ++ "' and '" ++ importPath ++ "' resolveth to the same file '" ++ absolute ++ "'")
         (_, Just _) -> pure ()
         (_, Nothing) -> do
           imported <- sourceSnapshot <$> lift (readSource (loadingTexts loading) absolute)

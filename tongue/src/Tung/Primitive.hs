@@ -103,18 +103,7 @@ requestData = HostData "web/request.tung" "_request"
 responseData = HostData "web/response.tung" "_response"
 
 hostData :: [HostData]
-hostData =
-  [ oneData,
-    twoData,
-    listData,
-    optionData,
-    productData,
-    sumData,
-    tableData,
-    processResultData,
-    requestData,
-    responseData
-  ]
+hostData = [oneData, twoData, listData, optionData, productData, sumData, tableData, processResultData, requestData, responseData]
 
 hostDataSchemas :: [HostDataSchema]
 hostDataSchemas =

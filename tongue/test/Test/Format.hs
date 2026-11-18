@@ -1,12 +1,11 @@
 module Test.Format (group) where
 
 import Data.Char (isSpace)
-import Test.Harness (Group, Test, expect, expectEq)
-import Test.Harness qualified as Harness
+import Test.Harness (Test, expect, expectEq)
 import Tung (formatSource)
 
-group :: IO Group
-group = Harness.group "format" (map tidyCase cases ++ [refusal, idempotence, canonical])
+group :: IO [Test]
+group = pure (map tidyCase cases ++ [refusal, idempotence, canonical])
 
 tidyCase :: (String, String, String) -> Test
 tidyCase (name, source, expected) = expectEq name (Right expected) (formatSource source)

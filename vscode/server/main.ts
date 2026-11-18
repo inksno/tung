@@ -3,45 +3,71 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+  type CancellationToken,
+  type CompletionItem,
   CompletionItemKind,
   createConnection,
-  type Diagnostic,
-  DiagnosticSeverity,
   DidChangeWatchedFilesNotification,
+  DidChangeWorkspaceFoldersNotification,
   DocumentHighlightKind,
+  type Hover,
   InsertTextFormat,
+  type Location,
   MarkupKind,
+  type Position,
   ProposedFeatures,
+  type Range,
+  type SelectionRange,
   SemanticTokensBuilder,
   SymbolKind,
+  type TextDocumentPositionParams,
   TextDocuments,
   TextDocumentSyncKind,
+  type TextEdit,
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import {
-  keywordHelp,
-  roleLabel,
+  type DocumentModel,
   nameRange,
+  roleLabel,
   smallestRegion,
   tokenAtPosition,
   tokenRange,
 } from "./analysis.ts";
-import { CompilerBridge } from "./checker.ts";
 import {
-  readDeclaredLibraryPaths,
-  resolveLibraryPaths,
-} from "./library-paths.ts";
-import { languageNames } from "./syntax.ts";
-import { toFilePath, uniqueByKey, WorkspaceIndex } from "./workspace.ts";
+  CompilerBridge,
+  type ErrorResult,
+  type ProofResult,
+} from "./checker.ts";
+import { DiagnosticPublisher } from "./diagnostics.ts";
 import {
   buildHighlightRanges,
   tokenModifiers,
   tokenTypes,
 } from "./highlight.ts";
+import {
+  readDeclaredLibraryPaths,
+  resolveLibraryPaths,
+} from "./library-paths.ts";
+import { languageNames } from "./syntax.ts";
+import {
+  type Completion,
+  type Referent,
+  toFilePath,
+  uniqueByKey,
+  WorkspaceIndex,
+} from "./workspace.ts";
 const connection = createConnection(ProposedFeatures.all);
 const documents = new TextDocuments(TextDocument);
 const compiler = new CompilerBridge();
 const workspace = new WorkspaceIndex(documents, compiler);
+const diagnostics = new DiagnosticPublisher(
+  connection,
+  documents,
+  workspace,
+  compiler,
+  () => checkBlocker(),
+);
 // navigation readeth models built from the compiler's syntax and names;
 // missing ones are fetched before the request is answered. a request that
 // searcheth every document fetcheth the names of every document.
@@ -54,44 +80,84 @@ const navigation =
     await workspace.ready(everywhere);
     return await handler(...parameters);
   };
-const timers = new Map();
-const checks = new Map();
-const diagnosticReports = new Map();
-// the goals of the latest successful check, by document.
-const goalReports = new Map();
 const typeCache = new Map<
   string,
   { promise: Promise<string | undefined>; cancel: () => void }
 >();
-const defaultCheckDelay = 500;
 const dependentCheckDelay = 1000;
 const semanticRefreshDelay = 200;
-let workspaceRoots = [];
-let tongueDir;
+let workspaceRoots: string[] = [];
 let canRegisterWatchedFiles = false;
 let canRefreshSemanticTokens = false;
-let configuredTongue;
-let configuredExecutable;
-let configuredLibraryPaths;
-let libraryRoots: string[] = [];
+let configuredTongue: string | undefined;
+let configuredExecutable: string | undefined;
+let configuredLibraryPaths: unknown;
 let localLibraryRoots: string[] = [];
 let libraryResolutionError: string | undefined;
-let semanticRefreshTimer;
+let semanticRefreshTimer: NodeJS.Timeout | undefined;
+const keywordHelp = new Map([
+  [
+    "bring",
+    "import a tung file; its last path segment is the default namespace, and an optional alias overrideth it.",
+  ],
+  [
+    "show",
+    "publish a declaration, or re-export every visible term, type, and class with a name.",
+  ],
+  ["yield", "introduce a block result."],
+  [
+    "sorry",
+    "stand for an omitted proof or definition of any type; performing it is a runtime error.",
+  ],
+  [
+    "axiom",
+    "assume a named constant of a type without a proof; `--check` lists it, `--no-sorry` alloweth it, and `--no-axiom` refuseth it in a proof check.",
+  ],
+  [
+    "unbuild",
+    "name the eliminator of a type or class: `drive unbuild name methods target` performeth structural induction.",
+  ],
+  ["class", "declare a class and its members."],
+  [
+    "foreign",
+    "bind an annotated file-level let to the host function named by a preceding string key.",
+  ],
+  ["bizen", "provide evidence and member definitions for a class."],
+  [
+    "match",
+    "match one or more values against exhaustive pattern rows; `;` joineth rows that share a result.",
+  ],
+  [
+    "function",
+    "write an annotated function: inputs, a final result type, `^`, and the body.",
+  ],
+  ["let", "bind a value, curried function, or type alias."],
+  [
+    "fast",
+    "declare an annotated effect whose body may call it without bound; checking never unfoldeth it.",
+  ],
+  ["effect", "the primitive type of an action the runner performeth."],
+  ["type", "declare an inductive type and its constructors."],
+]);
+// a setting is a non-empty string or absent.
+const stringOption = (value: unknown) =>
+  typeof value === "string" && value ? value : undefined;
 connection.onInitialize((params) => {
-  configuredTongue = params.initializationOptions?.tonguePath;
-  configuredExecutable = params.initializationOptions?.executablePath;
-  configuredLibraryPaths = params.initializationOptions?.libraryPaths;
+  const options = params.initializationOptions;
+  configuredTongue = stringOption(options?.tonguePath);
+  configuredExecutable = stringOption(options?.executablePath);
+  configuredLibraryPaths = options?.libraryPaths;
   canRegisterWatchedFiles = Boolean(
-    params.capabilities?.workspace?.didChangeWatchedFiles?.dynamicRegistration,
+    params.capabilities.workspace?.didChangeWatchedFiles?.dynamicRegistration,
   );
   canRefreshSemanticTokens = Boolean(
-    params.capabilities?.workspace?.semanticTokens?.refreshSupport,
+    params.capabilities.workspace?.semanticTokens?.refreshSupport,
   );
   workspaceRoots = uniqueByKey(
     [
-      ...(params.workspaceFolders || []).map(({ uri }) => toFilePath(uri)),
-      toFilePath(params.rootUri),
-    ].filter(Boolean),
+      ...(params.workspaceFolders ?? []).map(({ uri }) => uri),
+      params.rootUri,
+    ].flatMap((uri) => toFilePath(uri) ?? []),
   );
   configureWorkspace();
   return {
@@ -143,16 +209,27 @@ connection.onInitialized(() => {
 connection.onShutdown(() => {
   workspace.clearSyntax();
   compiler.dispose();
-  return null;
 });
-connection.onRequest("tung/executable", () => compiler.findExecutable());
+connection.onRequest(
+  "tung/executable",
+  () => compiler.findExecutable() ?? null,
+);
 connection.onRequest("tung/libraryPath", () =>
   localLibraryRoots.join(path.delimiter),
 );
-connection.onRequest<unknown, never>(
+type ProofRequest = {
+  textDocument: { uri: string };
+  position?: Position;
+  name?: unknown;
+  allowedAxioms?: string[];
+};
+connection.onRequest<ProofResult | ErrorResult, never>(
   "tung/checkProof",
   navigation(
-    async ({ textDocument, position, name, allowedAxioms }, cancellation) => {
+    async (
+      { textDocument, position, name, allowedAxioms }: ProofRequest,
+      cancellation?: CancellationToken,
+    ): Promise<ProofResult | ErrorResult> => {
       if (libraryResolutionError)
         return {
           kind: "error",
@@ -163,7 +240,7 @@ connection.onRequest<unknown, never>(
         return { kind: "error", message: "open a tung file to check a proof" };
       const document = documents.get(textDocument.uri);
       const version = document?.version ?? 0;
-      const offset = position ? document?.offsetAt(position) : undefined;
+      const offset = position && document?.offsetAt(position);
       const region =
         offset === undefined
           ? undefined
@@ -226,32 +303,31 @@ connection.onRequest<unknown, never>(
 );
 process.on("exit", () => compiler.dispose());
 connection.onNotification(
-  "workspace/didChangeWorkspaceFolders",
+  DidChangeWorkspaceFoldersNotification.type,
   ({ event }) => {
-    const { added = [], removed = [] } = event || {};
-    const removedPaths = new Set(
-      removed.map(({ uri }) => toFilePath(uri)).filter(Boolean),
+    const removed = new Set(
+      event.removed.flatMap(({ uri }) => toFilePath(uri) ?? []),
     );
     workspaceRoots = uniqueByKey([
-      ...workspaceRoots.filter((root) => !removedPaths.has(root)),
-      ...added.map(({ uri }) => toFilePath(uri)).filter(Boolean),
+      ...workspaceRoots.filter((root) => !removed.has(root)),
+      ...event.added.flatMap(({ uri }) => toFilePath(uri) ?? []),
     ]);
     configureWorkspace();
-    checkAllOpenDocuments();
+    diagnostics.scheduleAll();
     scheduleSemanticRefresh();
   },
 );
 connection.onDidChangeWatchedFiles(({ changes }) => {
   if (
     changes.some(
-      ({ uri }) => path.basename(toFilePath(uri) || "") === "tung.yaml",
+      ({ uri }) => path.basename(toFilePath(uri) ?? "") === "tung.yaml",
     )
   ) {
     configureWorkspace();
   }
   for (const { uri } of changes) workspace.invalidate(uri);
   workspace.invalidateFiles();
-  checkAllOpenDocuments();
+  diagnostics.scheduleAll();
   scheduleSemanticRefresh();
 });
 connection.languages.semanticTokens.on(({ textDocument }) =>
@@ -261,23 +337,24 @@ connection.languages.semanticTokens.onRange(({ textDocument, range }) =>
   semanticTokens(textDocument.uri, range),
 );
 connection.onCompletion(
-  navigation(({ textDocument, position }) => {
+  navigation(({ textDocument, position }): CompletionItem[] => {
     const model = workspace.model(textDocument.uri);
-    if (!model) return [];
-    if (inUsePath(model, position)) {
+    const document = documents.get(textDocument.uri);
+    if (!model || !document) return [];
+    const before = document.getText().slice(0, document.offsetAt(position));
+    if (inImportPath(model, position, before)) {
       return workspace.modulePaths(textDocument.uri).map((label) => ({
         label,
         kind: CompletionItemKind.Module,
         detail: "tung module",
       }));
     }
-    const prefix = completionPrefix(model, position);
-    const definitions = [
+    const prefix = before.match(/[^\s#()[\]{}:,;=.$`'@^]+$/u)?.[0] ?? "";
+    const definitionItems = [
       ...workspace.completions(textDocument.uri, position),
       ...workspace.primitiveCompletions(),
-    ];
-    const definitionItems = definitions
-      .map((definition) => definitionCompletion(definition))
+    ]
+      .map(completionItem)
       .filter(
         ({ label }) =>
           !prefix || label.startsWith(prefix) || label.includes(`.${prefix}`),
@@ -287,7 +364,7 @@ connection.onCompletion(
       .map((label) => ({
         label,
         kind: CompletionItemKind.Keyword,
-        detail: keywordHelp[label] || "tung keyword",
+        detail: keywordHelp.get(label) ?? "tung keyword",
       }));
     return uniqueByKey(
       [...definitionItems, ...keywordItems],
@@ -296,74 +373,77 @@ connection.onCompletion(
   }),
 );
 connection.onHover(
-  navigation(async ({ textDocument, position }, cancellation) => {
-    // a `sorry` showeth the goal and context the latest check found there.
-    const open = documents.get(textDocument.uri);
-    const offset = open?.offsetAt(position);
-    const goal = (goalReports.get(textDocument.uri) || []).find(
-      ({ start, end }) =>
-        offset !== undefined && start <= offset && offset < end,
-    );
-    if (open && goal) {
-      return {
-        range: {
-          start: open.positionAt(goal.start),
-          end: open.positionAt(goal.end),
-        },
-        contents: {
-          kind: MarkupKind.Markdown,
-          value: `\`\`\`tung\n${goal.message}\n\`\`\``,
-        },
-      };
-    }
-    const resolved = workspace.resolveAt(textDocument.uri, position);
-    if (resolved.definition) {
-      const definition = resolved.definition;
-      const header =
-        definition.detail ||
-        `${roleLabel(definition.role)} ${definition.bareName}`;
-      const inferred = await inspectType(definition, cancellation);
-      const docText = definition.documentation
-        ? `${definition.documentation}\n\n`
-        : "";
-      const typeText = inferred
-        ? `\n\n**inferred type**\n\n\`\`\`tung\n${definition.bareName}: ${inferred}\n\`\`\``
-        : "";
-      return {
-        range: nameRange(resolved.token),
-        contents: {
-          kind: MarkupKind.Markdown,
-          value: `${docText}\`\`\`tung\n${header}\n\`\`\`\n\n${roleDescription(
-            definition,
-          )}${typeText}`,
-        },
-      };
-    }
-    if (
-      resolved.token?.kind === "keyword" &&
-      keywordHelp[resolved.token.text]
-    ) {
-      return {
-        range: tokenRange(resolved.token),
-        contents: {
-          kind: MarkupKind.Markdown,
-          value: keywordHelp[resolved.token.text],
-        },
-      };
-    }
-    const primitive = workspace
-      .primitiveCompletions()
-      .find(({ bareName }) => bareName === resolved.token?.text);
-    return primitive
-      ? {
-          range: nameRange(resolved.token),
-          contents: { kind: MarkupKind.Markdown, value: primitive.detail },
-        }
-      : null;
-  }),
+  navigation(
+    async ({ textDocument, position }, cancellation): Promise<Hover | null> => {
+      // a `sorry` showeth the goal and context the latest check found there.
+      const open = documents.get(textDocument.uri);
+      const goal =
+        open && diagnostics.goalAt(textDocument.uri, open.offsetAt(position));
+      if (open && goal) {
+        return {
+          range: {
+            start: open.positionAt(goal.start),
+            end: open.positionAt(goal.end),
+          },
+          contents: {
+            kind: MarkupKind.Markdown,
+            value: `\`\`\`tung\n${goal.message}\n\`\`\``,
+          },
+        };
+      }
+      const { token, definition } = workspace.resolveAt(
+        textDocument.uri,
+        position,
+      );
+      if (!token) return null;
+      if (definition) {
+        const inferred = await inspectType(definition, cancellation);
+        const docText = definition.documentation
+          ? `${definition.documentation}\n\n`
+          : "";
+        const typeText = inferred
+          ? `\n\n**inferred type**\n\n\`\`\`tung\n${definition.bareName}: ${inferred}\n\`\`\``
+          : "";
+        return {
+          range: nameRange(token),
+          contents: {
+            kind: MarkupKind.Markdown,
+            value: `${docText}\`\`\`tung\n${definition.detail}\n\`\`\`\n\n${roleDescription(
+              definition,
+            )}${typeText}`,
+          },
+        };
+      }
+      const help =
+        token.kind === "keyword" ? keywordHelp.get(token.text) : undefined;
+      if (help) {
+        return {
+          range: tokenRange(token),
+          contents: { kind: MarkupKind.Markdown, value: help },
+        };
+      }
+      const primitive = workspace
+        .primitiveCompletions()
+        .find(({ label }) => label === token.text);
+      return primitive
+        ? {
+            range: nameRange(token),
+            contents: {
+              kind: MarkupKind.Markdown,
+              value: primitive.definition.detail,
+            },
+          }
+        : null;
+    },
+  ),
 );
-const navigateToDefinition = navigation(({ textDocument, position }) =>
-  definitionLocation(textDocument.uri, position),
+const navigateToDefinition = navigation(
+  ({ textDocument, position }: TextDocumentPositionParams): Location | null => {
+    const { definition } = workspace.resolveAt(textDocument.uri, position);
+    return definition && !definition.primitive && definition.uri
+      ? { uri: definition.uri, range: definition.selectionRange }
+      : null;
+  },
 );
 connection.onDefinition(navigateToDefinition);
 connection.onDeclaration(navigateToDefinition);
@@ -393,18 +473,17 @@ connection.onDocumentSymbol(
   navigation(({ textDocument }) => {
     const model = workspace.model(textDocument.uri);
     if (!model) return [];
-    const visible = model.definitions.filter(
-      (definition) => !definition.local && definition.topLevel,
-    );
-    return visible.map((definition) => ({
-      name: definition.bareName,
-      detail: definition.detail,
-      kind: symbolKind(definition.role),
-      range:
-        smallestRegion(model.regions, definition.token.offset)?.range ||
-        definition.range,
-      selectionRange: definition.selectionRange,
-    }));
+    return model.definitions
+      .filter((definition) => !definition.local && definition.topLevel)
+      .map((definition) => ({
+        name: definition.bareName,
+        detail: definition.detail,
+        kind: symbolKind(definition.role),
+        range:
+          smallestRegion(model.regions, definition.token.offset)?.range ??
+          definition.selectionRange,
+        selectionRange: definition.selectionRange,
+      }));
   }),
 );
 connection.onWorkspaceSymbol(
@@ -445,7 +524,7 @@ connection.onRenameRequest(
     if (!validName(newName)) throw new Error(`invalid tung name '${newName}'`);
     const { definition } = workspace.resolveAt(textDocument.uri, position);
     if (!definition || definition.primitive) return null;
-    const changes = {};
+    const changes: Record<string, TextEdit[]> = {};
     for (const { uri, range } of workspace.references(definition, true)) {
       (changes[uri] ||= []).push({ range, newText: newName });
     }
@@ -454,7 +533,7 @@ connection.onRenameRequest(
 );
 connection.onFoldingRanges(
   navigation(
-    ({ textDocument }) => workspace.model(textDocument.uri)?.folds || [],
+    ({ textDocument }) => workspace.model(textDocument.uri)?.folds ?? [],
   ),
 );
 connection.onSelectionRanges(
@@ -482,22 +561,20 @@ connection.onDocumentLinks(
     });
   }),
 );
-const formatDocument = async (uri) => {
-  const document = documents.get(uri);
-  if (!document) return undefined;
-  const source = document.getText();
-  const version = document.version;
-  const formatted = await compiler.format(source, version).result;
-  return formatted !== undefined && documents.get(uri)?.version === version
-    ? { document, source, formatted }
-    : undefined;
-};
-connection.onDocumentFormatting(async ({ textDocument }) => {
-  const result = await formatDocument(textDocument.uri);
-  return !result || result.formatted === result.source
-    ? []
-    : [{ range: fullRange(result.document), newText: result.formatted }];
-});
+connection.onDocumentFormatting(
+  async ({ textDocument }): Promise<TextEdit[]> => {
+    const document = documents.get(textDocument.uri);
+    if (!document) return [];
+    const source = document.getText();
+    const version = document.version;
+    const formatted = await compiler.format(source, version).result;
+    return formatted === undefined ||
+      formatted === source ||
+      documents.get(textDocument.uri)?.version !== version
+      ? []
+      : [{ range: fullRange(document), newText: formatted }];
+  },
+);
 connection.onSignatureHelp(
   navigation(({ textDocument, position }) => {
     const model = workspace.model(textDocument.uri);
@@ -510,22 +587,15 @@ connection.onSignatureHelp(
       )
       .at(-1);
     if (!before) return null;
-    const resolved = workspace.resolveAt(textDocument.uri, {
+    const { definition } = workspace.resolveAt(textDocument.uri, {
       line: before.line,
       character: before.char,
     });
-    if (
-      !resolved.definition ||
-      !["function", "method"].includes(resolved.definition.role)
-    ) {
+    if (!definition || !["function", "method"].includes(definition.role)) {
       return null;
     }
     return {
-      signatures: [
-        {
-          label: resolved.definition.detail || resolved.definition.bareName,
-        },
-      ],
+      signatures: [{ label: definition.detail || definition.bareName }],
       activeSignature: 0,
       activeParameter: 0,
     };
@@ -535,15 +605,15 @@ documents.onDidOpen(({ document }) => {
   configureWorkspace();
   workspace.invalidate(document.uri);
   clearTypeCache(document.uri);
-  checkAllOpenDocuments();
+  diagnostics.scheduleAll();
 });
 documents.onDidChangeContent(({ document }) => {
   workspace.invalidate(document.uri);
   clearTypeCache(document.uri);
-  scheduleCheck(document);
+  diagnostics.schedule(document);
   for (const dependent of documents.all()) {
     if (dependent.uri !== document.uri) {
-      scheduleCheck(dependent, dependentCheckDelay);
+      diagnostics.schedule(dependent, dependentCheckDelay);
     }
   }
   scheduleSemanticRefresh();
@@ -553,19 +623,14 @@ documents.onDidSave(({ document }) => {
   clearTypeCache(document.uri);
 });
 documents.onDidClose(({ document }) => {
-  cancelCheck(document.uri);
+  diagnostics.close(document.uri);
   configureWorkspace();
   workspace.invalidate(document.uri);
-  const previous = diagnosticReports.get(document.uri);
-  diagnosticReports.delete(document.uri);
-  goalReports.delete(document.uri);
-  for (const { targetUri } of previous || []) refreshDiagnostics(targetUri);
-  refreshDiagnostics(document.uri);
-  checkAllOpenDocuments();
+  diagnostics.scheduleAll();
 });
 // requests share one compiler parse per buffer version. navigation refineth only
 // names whose constructor identity requireth workspace context.
-const semanticTokens = async (uri, requestedRange = undefined) => {
+const semanticTokens = async (uri: string, requestedRange?: Range) => {
   const document = documents.get(uri);
   const builder = new SemanticTokensBuilder();
   if (!document) return builder.build();
@@ -574,16 +639,23 @@ const semanticTokens = async (uri, requestedRange = undefined) => {
   const { roles } = await workspace.syntax(uri, source, version);
   await workspace.ready();
   if (documents.get(uri)?.version !== version) return builder.build();
-  const resolve = (token) =>
-    workspace.resolveAt(uri, { line: token.line, character: token.char })
-      .definition;
   const types = new Map(
     workspace.namesOf(uri).resolved.map(([start, , , , type]) => [start, type]),
   );
-  for (const token of buildHighlightRanges(source, roles, resolve, (start) =>
-    types.get(start),
-  )) {
-    if (requestedRange && !rangeContainsLine(requestedRange, token.line)) {
+  const ranges = buildHighlightRanges(
+    source,
+    roles,
+    (token) =>
+      workspace.resolveAt(uri, { line: token.line, character: token.char })
+        .definition,
+    (start) => types.get(start),
+  );
+  for (const token of ranges) {
+    if (
+      requestedRange &&
+      (token.line < requestedRange.start.line ||
+        token.line > requestedRange.end.line)
+    ) {
       continue;
     }
     const type = tokenTypes.indexOf(token.type);
@@ -612,76 +684,20 @@ const scheduleSemanticRefresh = (delay = semanticRefreshDelay) => {
     }
   }, delay);
 };
-const scheduleCheck = (document, delay = defaultCheckDelay) => {
-  cancelCheck(document.uri);
-  timers.set(
-    document.uri,
-    setTimeout(() => runCheck(document), delay),
-  );
+// why no check can run: the project's libraries do not resolve, or there is
+// no compiler.
+const checkBlocker = () => {
+  if (libraryResolutionError) return `project error: ${libraryResolutionError}`;
+  if (compiler.available()) return undefined;
+  return configuredExecutable
+    ? `could not find tung executable at ${configuredExecutable}`
+    : "could not find tung executable; install tung or set tung.executablePath";
 };
-const cancelCheck = (uri) => {
-  clearTimeout(timers.get(uri));
-  timers.delete(uri);
-  checks.get(uri)?.cancel();
-  checks.delete(uri);
-};
-const checkAllOpenDocuments = () => {
-  for (const document of documents.all()) scheduleCheck(document, 0);
-};
-// diagnostics are debounced and versioned; cancellation stopeth obsolete work
-// in the persistent compiler session before a newer request is sent.
-const runCheck = async (document) => {
-  timers.delete(document.uri);
-  if (libraryResolutionError) {
-    publish(document, `project error: ${libraryResolutionError}`);
-    return;
-  }
-  if (!compiler.available()) {
-    publish(
-      document,
-      configuredExecutable
-        ? `could not find tung executable at ${configuredExecutable}`
-        : "could not find tung executable; install tung or set tung.executablePath",
-    );
-    return;
-  }
-  // imports come from the compiler's syntax of each document; a newer edit
-  // or check supersedeth this one meanwhile.
-  await workspace.ready();
-  if (
-    timers.has(document.uri) ||
-    checks.has(document.uri) ||
-    documents.get(document.uri)?.version !== document.version
-  )
-    return;
-  const model = workspace.model(document.uri);
-  const running = compiler.check(
-    model,
-    workspace.openTexts(),
-    document.version,
-  );
-  checks.set(document.uri, running);
-  running.result.then((output) => {
-    if (checks.get(document.uri) !== running) return;
-    checks.delete(document.uri);
-    const current = documents.get(document.uri);
-    if (!current || current.version !== running.version) return;
-    const diagnostics = output.kind === "check" ? output.diagnostics : [];
-    const goals = diagnostics.filter(
-      (diagnostic) => diagnostic.kind === "goal",
-    );
-    goalReports.set(current.uri, goals);
-    publish(
-      current,
-      output.kind === "error"
-        ? output.message
-        : diagnostics.find((diagnostic) => diagnostic.kind !== "goal"),
-      goals,
-    );
-  });
-};
-const inspectType = (definition, cancellation = undefined) => {
-  if (!definition?.uri || definition.primitive || !compiler.available()) {
+const inspectType = (
+  definition: Referent,
+  cancellation?: CancellationToken,
+): Promise<string | undefined> => {
+  if (definition.primitive || !definition.uri || !compiler.available()) {
     return Promise.resolve(undefined);
   }
   const model = workspace.model(definition.uri);
@@ -689,7 +705,7 @@ const inspectType = (definition, cancellation = undefined) => {
   const key = `${definition.uri}\0${definition.bareName}\0${model.text}`;
   const cached = typeCache.get(key);
   if (cached) return cached.promise;
-  const version = documents.get(definition.uri)?.version || 0;
+  const version = documents.get(definition.uri)?.version ?? 0;
   const running = compiler.typeOf(
     model,
     workspace.openTexts(),
@@ -710,124 +726,22 @@ const inspectType = (definition, cancellation = undefined) => {
   });
   return entry.promise.finally(() => cancelled?.dispose());
 };
-const clearTypeCache = (uri) => {
+const clearTypeCache = (uri: string) => {
   for (const key of typeCache.keys()) {
     if (!key.startsWith(`${uri}\0`)) continue;
     typeCache.get(key)?.cancel();
     typeCache.delete(key);
   }
 };
-const publish = (document, diagnostic, goals = []) => {
-  const previous = diagnosticReports.get(document.uri);
-  const message =
-    typeof diagnostic === "string" ? diagnostic : diagnostic?.message;
-  const owner = diagnosticOwner(document, diagnostic);
-  // a root buffer's goals retain their locations when an import hath an error.
-  const items: { targetUri: string; diagnostic: Diagnostic }[] = goals.map(
-    ({ start, end, message: goal }) => ({
-      targetUri: document.uri,
-      diagnostic: {
-        range: {
-          start: document.positionAt(start),
-          end: document.positionAt(end),
-        },
-        severity: DiagnosticSeverity.Information,
-        source: "tung",
-        message: goal,
-      },
-    }),
-  );
-  if (message) {
-    items.unshift({
-      targetUri: owner.uri,
-      diagnostic: {
-        range: errorRange(owner, diagnostic),
-        severity: DiagnosticSeverity.Error,
-        source: "tung",
-        message,
-      },
-    });
-  }
-  if (items.length) {
-    diagnosticReports.set(document.uri, items);
-  } else {
-    diagnosticReports.delete(document.uri);
-  }
-  for (const uri of new Set([
-    document.uri,
-    ...[...(previous || []), ...items].map(({ targetUri }) => targetUri),
-  ])) {
-    refreshDiagnostics(uri);
-  }
-};
-const diagnosticOwner = (document, diagnostic) => {
-  if (typeof diagnostic !== "string" && diagnostic?.path) {
-    const root = workspace.model(document.uri);
-    const imported = workspace.importModel(root, diagnostic.path);
-    if (imported) {
-      const open = documents.get(imported.uri);
-      return (
-        open || TextDocument.create(imported.uri, "tung", 0, imported.text)
-      );
-    }
-  }
-  return document;
-};
-const refreshDiagnostics = (uri) => {
-  if (!uri) return;
-  const items = uniqueByKey(
-    [...diagnosticReports.values()]
-      .flat()
-      .filter(({ targetUri }) => targetUri === uri)
-      .map(({ diagnostic }) => diagnostic),
-    ({ range, message }) =>
-      `${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}:${message}`,
-  );
-  const open = documents.get(uri);
-  connection.sendDiagnostics({
-    uri,
-    ...(open ? { version: open.version } : {}),
-    diagnostics: items,
-  });
-};
-const errorRange = (document, diagnostic) => {
-  if (
-    typeof diagnostic !== "string" &&
-    Number.isInteger(diagnostic?.start) &&
-    Number.isInteger(diagnostic?.end)
-  ) {
-    return {
-      start: document.positionAt(diagnostic.start),
-      end: document.positionAt(diagnostic.end),
-    };
-  }
-  return {
-    start: document.positionAt(0),
-    end: document.positionAt(Math.min(1, document.getText().length)),
-  };
-};
-const definitionLocation = (uri, position) => {
-  const { definition } = workspace.resolveAt(uri, position);
-  return definition?.uri
-    ? { uri: definition.uri, range: definition.selectionRange }
-    : null;
-};
-const definitionCompletion = (definition) => {
-  const label = definition.completionName || definition.bareName;
-  return {
-    label,
-    kind: completionKind(definition.role),
-    detail: definition.detail,
-    documentation: definition.documentation,
-    insertText: label,
-    insertTextFormat: InsertTextFormat.PlainText,
-    sortText: definition.local
-      ? `0-${label}`
-      : definition.primitive
-        ? `2-${label}`
-        : `1-${label}`,
-  };
-};
+const completionItem = ({ label, definition }: Completion): CompletionItem => ({
+  label,
+  kind: completionKind(definition.role),
+  detail: definition.detail,
+  documentation: definition.documentation,
+  insertText: label,
+  insertTextFormat: InsertTextFormat.PlainText,
+  sortText: `${definition.primitive ? 2 : definition.local ? 0 : 1}-${label}`,
+});
 const roleKinds: Record<string, [CompletionItemKind, SymbolKind]> = {
   namespace: [CompletionItemKind.Module, SymbolKind.Namespace],
   type: [CompletionItemKind.TypeParameter, SymbolKind.TypeParameter],
@@ -839,112 +753,91 @@ const roleKinds: Record<string, [CompletionItemKind, SymbolKind]> = {
   property: [CompletionItemKind.Field, SymbolKind.Field],
   enumMember: [CompletionItemKind.EnumMember, SymbolKind.EnumMember],
 };
-const completionKind = (role) =>
-  roleKinds[role]?.[0] || CompletionItemKind.Text;
-const symbolKind = (role) => roleKinds[role]?.[1] || SymbolKind.String;
-const roleDescription = (definition) => {
-  const where =
-    definition.uri && toFilePath(definition.uri)
-      ? `defined in \`${path.basename(toFilePath(definition.uri))}\``
-      : "";
+const completionKind = (role: string) =>
+  roleKinds[role]?.[0] ?? CompletionItemKind.Text;
+const symbolKind = (role: string) => roleKinds[role]?.[1] ?? SymbolKind.String;
+const roleDescription = (definition: Referent) => {
+  if (definition.primitive) return `built-in · ${roleLabel(definition.role)}`;
+  const file = toFilePath(definition.uri);
   const visibility = definition.exported
     ? "shown"
     : definition.local
       ? "local"
       : "private";
-  return [visibility, roleLabel(definition.role), where]
+  return [
+    visibility,
+    roleLabel(definition.role),
+    file ? `defined in \`${path.basename(file)}\`` : "",
+  ]
     .filter(Boolean)
     .join(" · ");
 };
-const selectionRange = (model, position) => {
+// the token, then each bracket pair around it, innermost first.
+const selectionRange = (
+  model: DocumentModel,
+  position: Position,
+): SelectionRange => {
   const token = tokenAtPosition(model, position);
-  const ranges = [
-    token ? tokenRange(token) : { start: position, end: position },
-  ];
-  const containing = [...model.pairs.entries()]
+  const start = token?.offset ?? model.text.length;
+  const end = token?.endOffset ?? model.text.length;
+  const enclosing = [...model.pairs.entries()]
     .filter(
       ([open, close]) =>
-        model.tokens[open].offset <= (token?.offset ?? model.text.length) &&
-        (token?.endOffset ?? model.text.length) <=
-          model.tokens[close].endOffset,
+        model.tokens[open].offset <= start &&
+        end <= model.tokens[close].endOffset,
     )
-    .sort(([a], [b]) => b - a);
-  for (const [open, close] of containing) {
-    ranges.push(tokenRange(model.tokens[open], model.tokens[close]));
-  }
-  let parent;
-  for (const range of ranges.reverse()) {
-    parent = { range, ...(parent ? { parent } : {}) };
-  }
-  return parent;
-};
-const inUsePath = (model, position) => {
-  const offset = offsetAt(model.text, position);
-  return (
-    model.imports.some(({ range }) => positionInRange(position, range)) ||
-    /(?:^|\s)use\s+[^\s]*$/.test(model.text.slice(0, offset))
-  );
-};
-const completionPrefix = (model, position) => {
-  const offset = offsetAt(model.text, position);
-  const before = model.text.slice(0, offset);
-  return before.match(/[^\s#()[\]{}:,;=.$`'@^]+$/u)?.[0] || "";
-};
-const fullRange = (document) => {
+    .sort(([a], [b]) => b - a)
+    .map(([open, close]) =>
+      tokenRange(model.tokens[open], model.tokens[close]),
+    );
   return {
-    start: { line: 0, character: 0 },
-    end: document.positionAt(document.getText().length),
+    range: token ? tokenRange(token) : { start: position, end: position },
+    parent: enclosing.reduceRight<SelectionRange | undefined>(
+      (parent, range) => ({ range, parent }),
+      undefined,
+    ),
   };
 };
-const rangeContainsLine = (range, line) => {
-  return range.start.line <= line && line <= range.end.line;
-};
-const positionInRange = (position, range) => {
-  return (
-    comparePosition(range.start, position) <= 0 &&
-    comparePosition(position, range.end) <= 0
-  );
-};
-const comparePosition = (left, right) => {
-  return left.line - right.line || left.character - right.character;
-};
-const offsetAt = (text, position) => {
-  const lines = text.split(/\r\n|\r|\n/);
-  let offset = 0;
-  for (let line = 0; line < Math.min(position.line, lines.length); line += 1) {
-    offset += lines[line].length + 1;
-  }
-  return offset + position.character;
-};
-const validName = (name) => {
-  return Boolean(name) && name !== "*" && !/[\s#()[\]{}:,;=.$`'@^]/u.test(name);
-};
+// a parsed bring path, or the word after an unfinished `bring`.
+const inImportPath = (
+  model: DocumentModel,
+  position: Position,
+  before: string,
+) =>
+  model.imports.some(({ range }) => positionInRange(position, range)) ||
+  /(?:^|\s)bring\s+[^\s]*$/.test(before);
+const fullRange = (document: TextDocument): Range => ({
+  start: { line: 0, character: 0 },
+  end: document.positionAt(document.getText().length),
+});
+const positionInRange = (position: Position, range: Range) =>
+  comparePosition(range.start, position) <= 0 &&
+  comparePosition(position, range.end) <= 0;
+const comparePosition = (left: Position, right: Position) =>
+  left.line - right.line || left.character - right.character;
+const validName = (name: string) =>
+  Boolean(name) && name !== "*" && !/[\s#()[\]{}:,;=.$`'@^]/u.test(name);
 const configureWorkspace = () => {
-  tongueDir = findTongueDir(configuredTongue);
   localLibraryRoots = resolveLibraryPaths(
     [],
     configuredLibraryPaths,
     process.env.TUNG_PATH,
   );
-  const executable = configuredExecutable || undefined;
   if (
-    compiler.tongue !== tongueDir ||
-    compiler.executablePath !== executable ||
-    compiler.libraryRoots.length !== localLibraryRoots.length ||
-    compiler.libraryRoots.some(
-      (root, index) => root !== localLibraryRoots[index],
+    compiler.configure(
+      findTongueDir(configuredTongue),
+      localLibraryRoots,
+      configuredExecutable,
     )
   ) {
     workspace.clearSyntax();
   }
-  compiler.configure(tongueDir, localLibraryRoots, executable);
   let declared: string[] = [];
   libraryResolutionError = undefined;
   try {
     const openProjects = documents
       .all()
-      .map(({ uri }) => toFilePath(uri))
-      .filter(Boolean);
+      .flatMap(({ uri }) => toFilePath(uri) ?? []);
     declared = readDeclaredLibraryPaths(
       compiler.findExecutable(),
       openProjects.length ? openProjects : workspaceRoots,
@@ -953,17 +846,22 @@ const configureWorkspace = () => {
     libraryResolutionError = String(error);
     connection.console.error(libraryResolutionError);
   }
-  libraryRoots = resolveLibraryPaths(declared, localLibraryRoots, undefined);
-  workspace.configure(workspaceRoots, libraryRoots);
+  workspace.configure(
+    workspaceRoots,
+    resolveLibraryPaths(declared, localLibraryRoots, undefined),
+  );
 };
-const findTongueDir = (configured) => {
+// the compiler checkout: a configured directory, `TUNG_TONGUE`, a workspace
+// root, or the repository this extension was built in.
+const findTongueDir = (configured: string | undefined) => {
   const roots = [
     configured && path.resolve(configured),
     process.env.TUNG_TONGUE && path.resolve(process.env.TUNG_TONGUE),
     ...workspaceRoots,
     path.resolve(__dirname, "..", "..", ".."),
   ];
-  for (const root of roots.filter(Boolean)) {
+  for (const root of roots) {
+    if (!root) continue;
     for (const candidate of [root, path.join(root, "tongue")]) {
       if (fs.existsSync(path.join(candidate, "tung.cabal"))) return candidate;
     }

@@ -96,7 +96,7 @@ three syntax facts cause frequent mistakes:
 | --------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | syntax or tokens                        | parser marks, tidier, diagnostics, language document, byspels, tests, and `vscode/` grammar      |
 | type, effect, class, or bizen semantics | type and evaluator regressions, library checking, and language document                          |
-| dependent core or source                | dependent test groups, their byspels, and `tongue/dependent.md`                                  |
+| core or source checking                 | core and source test groups, their byspels, and `tongue/dependent.md`                            |
 | runtime or host surface                 | primitive or host catalogue, `library/_foreign.tung`, exact evaluator tests, and runner boundary |
 | public library api                      | doc comments, library tests, and a realistic byspel when useful                                  |
 | editor behaviour                        | `vscode/` compiler roles and navigation model, typescript checks, and editor tests               |

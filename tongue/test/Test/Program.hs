@@ -6,15 +6,13 @@ import Control.Exception qualified as Exception
 import Control.Monad (replicateM)
 import Data.List (intercalate, isPrefixOf)
 import Data.Map.Strict qualified as Map
-import Test.DependentSupport (Library, compileWith, loadLibrary, runSimulated)
-import Test.Harness (Group, Test, evaluateSource, expectEq, integerSource)
-import Test.Harness qualified as Harness
+import Test.Harness (Test, evaluateSource, expectEq, integerSource)
+import Test.Support (Library, compileWith, loadLibrary, runSimulated)
 
-group :: IO Group
+group :: IO [Test]
 group = do
   library <- loadLibrary ["often.tung", "effect/fallible.tung", "type/hade.tung"]
-  Harness.group
-    "program"
+  pure
     ( map integerCase integerTerms
         ++ map languageCase (languagePrograms ++ booleanProductPrograms ++ dictionaryPrograms)
         ++ map importCase importPrograms
@@ -172,7 +170,7 @@ dictionaryPrograms =
         ++ " twice",
       "eval ok: " ++ integerSource (start + 2 * step)
     )
-  | (step, start) <- [(-2, 4), (0, -1), (3, -1)]
+  | (step, start) <- [(-2, 4), (0, -1), (3, -1 :: Integer)]
   ]
 
 -- a chain of modules, each adding its index to the value it importeth.

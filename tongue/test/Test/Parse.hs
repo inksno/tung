@@ -5,15 +5,14 @@ import Control.Monad (filterM)
 import Data.List (sortOn)
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath (takeExtension, (</>))
-import Test.Harness (Group, Test, expectEq, integerSource, parseErr, parseOk)
-import Test.Harness qualified as Harness
+import Test.Harness (Test, expectEq, integerSource, parseErr, parseOk, propertyTest)
 import Test.QuickCheck qualified as QuickCheck
 import Tung (Leaf (..), NodeKind (..), Piece (..), PieceKind (..), SourceFailure (..), SourceSpan (..), SourceSyntax (..), Token (..), Tree (..), sourceSyntaxSummary, sourceTree, treeText)
-import Tung.Dependent.Source (Declaration (..), parseExpression, parseProgram, parseSource, recoverSnapshot, sketch, sourceSnapshot)
+import Tung.Source (Declaration (..), parseExpression, parseProgram, parseSource, recoverSnapshot, sketch, sourceSnapshot)
 
-group :: IO Group
+group :: IO [Test]
 group =
-  Harness.group "parse" $
+  pure $
     map (uncurry parseOk) accepted
       ++ map (uncurry parseErr) rejected
       ++ importCases
@@ -179,7 +178,7 @@ definitionForms =
 
 parserProperties :: [Test]
 parserProperties =
-  [ Harness.propertyTest ("property: top-level let boundary " ++ show separator) $
+  [ propertyTest ("property: top-level let boundary " ++ show separator) $
       QuickCheck.forAll (QuickCheck.chooseInteger (-999, 999)) \first ->
         QuickCheck.forAll (QuickCheck.chooseInteger (-999, 999)) \second ->
           let source = "let first ≔ " ++ integerSource first ++ separator ++ "let second ≔ " ++ integerSource second

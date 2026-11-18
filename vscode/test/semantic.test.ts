@@ -34,6 +34,7 @@ const sourceLabels = async (source: string) => {
   );
   await workspace.ready();
   const model = workspace.model(uri);
+  assert(model);
   const { roles } = await workspace.syntax(uri, source);
   const ranges = buildHighlightRanges(
     source,
@@ -301,20 +302,23 @@ test("compiler spans map unicode and line endings without eager name resolution"
   );
 });
 test("navigation and colouring share requests and discard obsolete results", async () => {
-  const requests = [];
+  const requests: {
+    result: Promise<SourceSyntax>;
+    resolve: (syntax: SourceSyntax) => void;
+    cancelled: boolean;
+    cancel(): void;
+  }[] = [];
   let source = "old";
   const document = { uri: "uri", version: 1, getText: () => source };
   const cache = new WorkspaceIndex(
     { get: () => document, all: () => [document] },
     {
-      highlight: (text, version) => {
-        let resolve;
+      highlight: () => {
+        let resolve: (syntax: SourceSyntax) => void = () => {};
         const result = new Promise<SourceSyntax>(
-          (resolveResult) => (resolve = resolveResult),
+          (settle) => (resolve = settle),
         );
         const request = {
-          text,
-          version,
           result,
           resolve,
           cancelled: false,
@@ -360,5 +364,5 @@ test("navigation and colouring share requests and discard obsolete results", asy
   cache.clearSyntax();
   requests[3].resolve(withRoles([[0, 3, "type", ["declaration"]]]));
   assert.deepEqual(await current, emptySyntax);
-  assert.equal(cache.model("uri").definitions.length, 0);
+  assert.equal(cache.model("uri")?.definitions.length, 0);
 });

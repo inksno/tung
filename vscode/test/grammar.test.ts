@@ -6,16 +6,33 @@ import * as oniguruma from "vscode-oniguruma";
 import * as textmate from "vscode-textmate";
 import { tokenModifiers, tokenTypes } from "../server/highlight.ts";
 const extensionRoot = path.resolve(__dirname, "..", "..");
-const grammar = JSON.parse(
+type Contribution = { id: string; superType?: string };
+type Manifest = {
+  contributes: {
+    configurationDefaults: {
+      "[tung]": Record<string, unknown>;
+      "editor.semanticTokenColorCustomizations": {
+        rules: Record<string, { italic?: boolean }>;
+      };
+    };
+    semanticTokenScopes: { scopes: Record<string, string[]> }[];
+    semanticTokenTypes: Contribution[];
+    semanticTokenModifiers: Contribution[];
+    commands: { command: string; title: string; icon?: string }[];
+    menus: Record<string, { command: string; when?: string }[]>;
+    configuration: { properties: Record<string, { default: unknown }> };
+  };
+};
+const grammar: { scopeName: string } = JSON.parse(
   fs.readFileSync(
     path.join(extensionRoot, "syntaxes", "tung.tmLanguage.json"),
     "utf8",
   ),
 );
-const manifest = JSON.parse(
+const manifest: Manifest = JSON.parse(
   fs.readFileSync(path.join(extensionRoot, "package.json"), "utf8"),
 );
-const languageConfiguration = JSON.parse(
+const languageConfiguration: { brackets: [string, string][] } = JSON.parse(
   fs.readFileSync(
     path.join(extensionRoot, "language-configuration.json"),
     "utf8",
@@ -53,7 +70,7 @@ test("textmate immediately scopeth lexical syntax", async () => {
   ]) {
     const position = source.lastIndexOf(name);
     const token = loaded
-      .tokenizeLine(source)
+      .tokenizeLine(source, textmate.INITIAL)
       .tokens.find(
         ({ startIndex, endIndex }) =>
           startIndex <= position && position < endIndex,
@@ -165,9 +182,9 @@ test("manifest exposeth running a tung file from the editor", () => {
   const title = manifest.contributes.menus["editor/title"].find(
     ({ command }) => command === "tung.runFile",
   );
-  assert.equal(command.title, "Run Tung File");
-  assert.equal(command.icon, "$(play)");
-  assert.equal(title.when, "resourceLangId == tung");
+  assert.equal(command?.title, "Run Tung File");
+  assert.equal(command?.icon, "$(play)");
+  assert.equal(title?.when, "resourceLangId == tung");
   assert.equal(
     manifest.contributes.configuration.properties["tung.tonguePath"].default,
     "",
@@ -202,9 +219,9 @@ test("semantic modifiers use standard lsp names or manifest contributions", () =
     assert(standard.has(modifier) || contributed.has(modifier), modifier);
   }
 });
-let loadedGrammar;
-const loadGrammar = async () => {
-  if (loadedGrammar) return loadedGrammar;
+let loadedGrammar: Promise<textmate.IGrammar> | undefined;
+const loadGrammar = () => (loadedGrammar ??= readGrammar());
+const readGrammar = async () => {
   const wasm = fs.readFileSync(
     require.resolve("vscode-oniguruma/release/onig.wasm"),
   );
@@ -213,8 +230,9 @@ const loadGrammar = async () => {
   );
   const registry = new textmate.Registry({
     onigLib: Promise.resolve({
-      createOnigScanner: (patterns) => new oniguruma.OnigScanner(patterns),
-      createOnigString: (source) => new oniguruma.OnigString(source),
+      createOnigScanner: (patterns: string[]) =>
+        new oniguruma.OnigScanner(patterns),
+      createOnigString: (source: string) => new oniguruma.OnigString(source),
     }),
     loadGrammar: (scopeName) =>
       Promise.resolve(
@@ -226,6 +244,7 @@ const loadGrammar = async () => {
           : null,
       ),
   });
-  loadedGrammar = registry.loadGrammar(grammar.scopeName);
-  return loadedGrammar;
+  const loaded = await registry.loadGrammar(grammar.scopeName);
+  assert(loaded, "the tung grammar loadeth");
+  return loaded;
 };

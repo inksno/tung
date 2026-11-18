@@ -5,18 +5,17 @@ module Test.Diagnostic (group) where
 import Data.Aeson (Value, eitherDecode, encode, object, (.=))
 import Data.Map.Strict qualified as Map
 import Test.Compile (compileProjectDetailed)
-import Test.DependentSupport (equalitySource)
-import Test.Harness (Group, Test, expectEq)
-import Test.Harness qualified as Harness
+import Test.Harness (Test, expectEq)
+import Test.Support (equalitySource)
 import Tung
-import Tung.Dependent.Source (CompileFailure (..), FailureKind (..))
+import Tung.Source (CompileFailure (..), FailureKind (..))
 
 -- a source and the modules it useth, checked together; the first failure, if any.
 diagnose :: String -> Map.Map String String -> Maybe Diagnostic
 diagnose source imports = either (Just . failureDiagnostic source imports) (const Nothing) (compileProjectDetailed Map.empty RootModule source imports)
 
-group :: IO Group
-group = Harness.group "diagnostic" (tokenCases ++ diagnosticCases ++ importedCases ++ importFailureCases ++ acceptedCases ++ unlocatedCases ++ encodedCases ++ [literalFailure, renderedFile])
+group :: IO [Test]
+group = pure (tokenCases ++ diagnosticCases ++ importedCases ++ importFailureCases ++ acceptedCases ++ unlocatedCases ++ encodedCases ++ [literalFailure, renderedFile])
 
 tokenCases :: [Test]
 tokenCases =

@@ -5,16 +5,15 @@ import Control.Monad (replicateM)
 import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, permutations)
 import Data.Map.Strict qualified as Map
 import Test.Compile (compileProject, compileSource)
-import Test.Harness (Group, Test, checkSource, expect, expectEq, expectPrefix, integerSource, runnableErr, typeErr, typeErrContaining, typeErrWith, typeOk, typeOkWith)
-import Test.Harness qualified as Harness
+import Test.Harness (Test, checkSource, expect, expectEq, expectPrefix, integerSource, runnableErr, typeErr, typeErrContaining, typeErrWith, typeOk, typeOkWith)
 import Tung (ModuleId (..), SymbolId (..), readLibraryImports)
-import Tung.Dependent qualified as Kernel
-import Tung.Dependent.Source (normaliseSourceExpression, sourceDefinitions, sourceEnvironment, typeOfName)
+import Tung.Core qualified as Core
+import Tung.Source (normaliseSourceExpression, sourceDefinitions, sourceEnvironment, typeOfName)
 
-group :: IO Group
+group :: IO [Test]
 group = do
   imports <- readLibraryImports "." >>= either fail pure
-  Harness.group "type" $
+  pure $
     map (\(name, source) -> typeOkWith name source imports) accepted
       ++ map (\(name, source) -> typeErrWith name source imports) rejected
       ++ importCases
@@ -486,7 +485,7 @@ evidenceCases =
 evidenceResolved :: String -> Either String Bool
 evidenceResolved source = do
   program <- compileSource (SourceModule "main.tung") source
-  mapM_ (Kernel.validate (sourceEnvironment program) . snd) (sourceDefinitions program)
+  mapM_ (Core.validate (sourceEnvironment program) . snd) (sourceDefinitions program)
   normal <-
     traverse
       (normaliseSourceExpression program)
@@ -495,7 +494,7 @@ evidenceResolved source = do
   where
     -- universe arguments may differ; the constant is what matters.
     isYea = \case
-      Kernel.Global symbol _ -> symbolName symbol == "yea"
+      Core.Global symbol _ -> symbolName symbol == "yea"
       _ -> False
 
 inspectType :: String -> Map.Map String String -> String -> Either String String

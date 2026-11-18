@@ -5,6 +5,7 @@ import * as path from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { CompilerBridge, emptySyntax } from "../server/checker.ts";
+import type { SourceToken } from "../server/syntax.ts";
 import { WorkspaceIndex } from "../server/workspace.ts";
 import { compiler } from "./compiler.ts";
 
@@ -22,12 +23,20 @@ const fixture = async (context: TestContext, files: Record<string, string>) => {
   );
   workspace.configure([root]);
   await workspace.ready(true);
-  const model = (name = "main.tung") =>
-    workspace.model(pathToFileURL(path.join(root, name)).href);
+  const model = (name = "main.tung") => {
+    const found = workspace.model(pathToFileURL(path.join(root, name)).href);
+    assert(found, name);
+    return found;
+  };
   return { root, workspace, model };
 };
+// the position of a token's first character.
+const start = (token: SourceToken | undefined) => {
+  assert(token);
+  return { line: token.line, character: token.char };
+};
 test("changing an import retaineth unchanged role snapshots", async () => {
-  const requests = [];
+  const requests: [string, number][] = [];
   let imported = "show let old ≔ +1";
   const documents = [
     { uri: "main", version: 1, getText: () => "bring dep.tung" },
@@ -74,18 +83,12 @@ test("requirements resolve imported types and declared parameters", async (conte
   });
   const model = getModel();
   const box = model.tokens.find((token) => token.text === "box");
-  const resolved = workspace.resolveAt(model.uri, {
-    line: box.line,
-    character: box.char,
-  }).definition;
+  const resolved = workspace.resolveAt(model.uri, start(box)).definition;
   assert.equal(resolved?.role, "type");
   assert.equal(resolved?.uri, pathToFileURL(path.join(root, "dep.tung")).href);
   const uses = model.tokens.filter((token) => token.text === "a");
-  const binder = workspace.resolveAt(model.uri, {
-    line: uses.at(-1).line,
-    character: uses.at(-1).char,
-  }).definition;
-  assert.equal(binder?.token.offset, uses[0].offset);
+  const binder = workspace.resolveAt(model.uri, start(uses.at(-1))).definition;
+  assert.equal(binder?.token?.offset, uses[0].offset);
 });
 test("imports expose shown names under explicit and basename aliases", async (context) => {
   const cases = [
@@ -128,7 +131,7 @@ test("imports expose shown names under explicit and basename aliases", async (co
           line: 0,
           character: current.text.length,
         })
-        .map(({ completionName, bareName }) => completionName || bareName),
+        .map(({ label }) => label),
     );
     assert(labels.has(`${namespace}~answer`), file);
     assert(!labels.has(`${wrong}~answer`), file);
@@ -172,10 +175,10 @@ test("an ambiguous bare import resolveth to nothing; its qualified names do", as
   const { visible } = workspace.namesOf(model().uri);
   assert(!visible.some(([written]) => written === "value"));
   const qualified = model().tokens.find(({ text }) => text === "left~value");
-  const resolved = workspace.resolveAt(model().uri, {
-    line: qualified.line,
-    character: qualified.char,
-  }).definition;
+  const resolved = workspace.resolveAt(
+    model().uri,
+    start(qualified),
+  ).definition;
   assert.equal(resolved?.uri, pathToFileURL(path.join(root, "left.tung")).href);
 });
 test("library modules do not become an implicit prelude", async (context) => {
@@ -194,11 +197,7 @@ test("library modules do not become an implicit prelude", async (context) => {
   workspace.configure([], [library]);
   await workspace.ready();
   const completions = workspace.primitiveCompletions();
-  const labels = new Set(
-    completions.map(
-      ({ completionName, bareName }) => completionName || bareName,
-    ),
-  );
+  const labels = new Set(completions.map(({ label }) => label));
   assert(!labels.has("offered"));
   assert(!labels.has("hidden"));
   assert(labels.has("ℤ"));
@@ -218,6 +217,7 @@ test("library module paths keep their exact file names", async (context) => {
   workspace.configure([root], [library]);
   await workspace.ready();
   const model = workspace.model(pathToFileURL(main).href);
+  assert(model);
   assert(workspace.modulePaths(model.uri).includes("_foreign.tung"));
   assert(!workspace.modulePaths(model.uri).includes("foreign.tung"));
   assert.equal(workspace.importModel(model, "foreign.tung"), undefined);
@@ -249,6 +249,7 @@ test("the compiler resolveth brings: exact library paths, ambiguous duplicates, 
   };
   assert.equal(await target(), pathToFileURL(module).href);
   const model = workspace.model(pathToFileURL(main).href);
+  assert(model);
   assert(workspace.modulePaths(model.uri).includes("extra.tung"));
   fs.writeFileSync(path.join(second, "extra.tung"), "show let value ≔ +2");
   assert.equal(await target(), undefined);
@@ -265,10 +266,7 @@ test("a field resolveth to its constructor's slot", async (context) => {
     "main.tung": "bring dep.tung\nlet first: [p: pair, ℕ] ≔ p.left",
   });
   const read = model().tokens.find(({ text }) => text === "left");
-  const field = workspace.resolveAt(model().uri, {
-    line: read.line,
-    character: read.char,
-  }).definition;
+  const field = workspace.resolveAt(model().uri, start(read)).definition;
   const dependency = pathToFileURL(path.join(root, "dep.tung")).href;
   assert.equal(field?.uri, dependency);
   assert.equal(field?.bareName, "left");

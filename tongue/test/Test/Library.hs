@@ -1,23 +1,20 @@
 -- local paths and pinned git checkouts supply ordinary modules.
 module Test.Library (group) where
 
-import Control.Exception (bracket)
 import Control.Monad (void)
 import Data.Char (toUpper)
 import Data.List (isInfixOf)
 import Data.Map.Strict qualified as Map
-import Data.Time.Clock.POSIX (getPOSIXTime)
-import System.Directory (canonicalizePath, createDirectory, createDirectoryIfMissing, createDirectoryLink, getTemporaryDirectory, removePathForcibly, renameDirectory)
+import System.Directory (canonicalizePath, createDirectory, createDirectoryIfMissing, createDirectoryLink, renameDirectory)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, takeFileName, (</>))
+import System.FilePath (takeFileName, (</>))
 import System.Process (readProcessWithExitCode)
-import Test.Harness (Group, Test, expect, expectEq)
-import Test.Harness qualified as Harness
+import Test.Harness (Test, expect, expectEq, withDirectory)
 import Tung (loadProjectFile, projectImports, proofAxiomPolicy, resolveLibraryRoots)
 
-group :: IO Group
+group :: IO [Test]
 group =
-  Harness.group "library" $
+  pure $
     [pinnedCheckout, gitSubdirectory, distinctGitSubdirectories, conflictingGitSubdirectoryNames, escapedGitSubdirectory, localPathDependency, transitivePathDependency, sharedTransitivePin, conflictingTransitivePins, conflictingAliasedPins, conflictingRepositoryNames, conflictingLibrarySources, conflictingPathNames, conflictingPathAndGitSources, invalidManifest, invalidPathSource, duplicateManifestKey, unknownManifestField, malformedManifest, transitiveCheckout, proofPolicyForms, proofPolicyNearestProject]
       ++ map
         (uncurry invalidProofPolicy)
@@ -516,17 +513,6 @@ commitAll :: FilePath -> String -> IO ()
 commitAll repository message = do
   runGit ["-C", repository, "add", "."]
   void (runGit ["-C", repository, "commit", "--quiet", "-m", message])
-
-withDirectory :: (FilePath -> Test) -> Test
-withDirectory action = bracket temporary removePathForcibly action
-  where
-    temporary = do
-      directory <- getTemporaryDirectory
-      stamp <- round . (* 1000000) <$> getPOSIXTime
-      let path = directory </> ("tung-library-test-" ++ show (stamp :: Integer))
-      createDirectoryIfMissing True (takeDirectory path)
-      createDirectory path
-      pure path
 
 runGit :: [String] -> IO String
 runGit arguments = do

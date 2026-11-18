@@ -31,6 +31,7 @@ interface ProofResult {
   message: string;
   report: string;
 }
+type ErrorResult = { kind: "error"; message: string };
 type CompilerResult =
   | { kind: "check"; diagnostics: CompilerDiagnostic[] }
   | { kind: "type"; type: string }
@@ -38,7 +39,12 @@ type CompilerResult =
   | { kind: "format"; source: string }
   | ({ kind: "highlight" } & SourceSyntax)
   | ({ kind: "names" } & SourceNames)
-  | { kind: "error"; message: string };
+  | ErrorResult;
+// a command's reply is a result of its own kind or an error.
+type ResultOf<Command extends CompilerCommand> = Extract<
+  CompilerResult,
+  { kind: Command | "error" }
+>;
 interface CompilerResponse {
   protocol: 1;
   id: number;
@@ -88,6 +94,21 @@ interface SourceNames {
     constructor: boolean,
   ][];
 }
+// a source the session checketh; a file document's uri nameth its path.
+type SourceDocument = { uri?: string; text: string };
+// a request in flight. `cancel` settleth it as an error and asketh the
+// session to stop its work.
+type Running<Result> = {
+  process: childProcess.ChildProcessWithoutNullStreams | undefined;
+  requestId: number;
+  version: number;
+  result: Promise<Result>;
+  cancel(): void;
+};
+const mapResult = <From, To>(
+  running: Running<From>,
+  map: (result: From) => To,
+): Running<To> => ({ ...running, result: running.result.then(map) });
 const emptyNames: SourceNames = { files: {}, resolved: [], visible: [] };
 const emptySyntax: SourceSyntax = {
   roles: [],
@@ -105,104 +126,116 @@ class CompilerBridge {
   pending = new Map<number, PendingRequest>();
   nextRequestId = 1;
   output = "";
-  configure(tongue, libraryRoots: string[] = [], executablePath?: string) {
+  // a changed configuration endeth the session; the result telleth whether
+  // anything changed.
+  configure(
+    tongue: string | undefined,
+    libraryRoots: string[] = [],
+    executablePath?: string,
+  ) {
     const tongueChanged = tongue !== this.tongue;
     const executableChanged = executablePath !== this.executablePath;
     const rootsChanged =
       libraryRoots.length !== this.libraryRoots.length ||
       libraryRoots.some((root, index) => root !== this.libraryRoots[index]);
-    if (tongueChanged || rootsChanged || executableChanged) {
+    const changed = tongueChanged || rootsChanged || executableChanged;
+    if (changed) {
       this.dispose();
       if (tongueChanged || executableChanged) this.executable = undefined;
     }
     this.tongue = tongue;
     this.executablePath = executablePath;
     this.libraryRoots = [...libraryRoots];
+    return changed;
   }
   available() {
     return Boolean(this.findExecutable());
   }
-  check(model, texts, version = 0) {
+  check(document: SourceDocument, texts: [string, string][], version = 0) {
     return this.request(
       "check",
-      model.text,
+      document.text,
       texts,
       "",
       version,
-      documentPath(model.uri),
+      documentPath(document.uri),
     );
   }
-  names(model, texts, version = 0) {
-    const request = this.request(
-      "names",
-      model.text,
-      texts,
-      "",
-      version,
-      documentPath(model.uri),
-    );
-    return {
-      ...request,
-      result: request.result.then((result): SourceNames | undefined =>
-        result.kind === "names" ? result : undefined,
+  names(document: SourceDocument, texts: [string, string][], version = 0) {
+    return mapResult(
+      this.request(
+        "names",
+        document.text,
+        texts,
+        "",
+        version,
+        documentPath(document.uri),
       ),
-    };
+      (result): SourceNames | undefined =>
+        result.kind === "names" ? result : undefined,
+    );
   }
-  typeOf(model, texts, name, version = 0) {
+  typeOf(
+    document: SourceDocument,
+    texts: [string, string][],
+    name: string,
+    version = 0,
+  ) {
     return this.request(
       "type",
-      model.text,
+      document.text,
       texts,
       name,
       version,
-      documentPath(model.uri),
+      documentPath(document.uri),
     );
   }
-  proof(model, texts, name, version = 0, allowedAxioms?: string[]) {
+  proof(
+    document: SourceDocument,
+    texts: [string, string][],
+    name: string,
+    version = 0,
+    allowedAxioms?: string[],
+  ) {
     return this.request(
       "proof",
-      model.text,
+      document.text,
       texts,
       name,
       version,
-      documentPath(model.uri),
+      documentPath(document.uri),
       allowedAxioms,
     );
   }
-  format(source, version = 0) {
-    const request = this.request("format", source, [], "", version);
-    return {
-      ...request,
-      result: request.result.then((result) =>
-        result.kind === "format" ? result.source : undefined,
-      ),
-    };
+  format(source: string, version = 0) {
+    return mapResult(
+      this.request("format", source, [], "", version),
+      (result) => (result.kind === "format" ? result.source : undefined),
+    );
   }
   highlight(source: string, version = 0) {
-    const request = this.request("highlight", source, [], "", version);
-    return {
-      ...request,
-      result: request.result.then((result): SourceSyntax | undefined =>
+    return mapResult(
+      this.request("highlight", source, [], "", version),
+      (result): SourceSyntax | undefined =>
         result.kind === "highlight" ? result : undefined,
-      ),
-    };
+    );
   }
-  request(
-    command: CompilerCommand,
-    source,
+  request<Command extends CompilerCommand>(
+    command: Command,
+    source: string,
     texts: [string, string][],
-    name,
-    version,
+    name: string,
+    version: number,
     path?: string,
     allowedAxioms?: string[],
-  ) {
+  ): Running<ResultOf<Command>> {
     const executable = this.findExecutable();
     if (!executable) {
       return {
         process: undefined,
         requestId: 0,
         version,
-        result: Promise.resolve<CompilerResult>({
+        result: Promise.resolve<ErrorResult>({
           kind: "error",
           message: "could not find the tung executable",
         }),
@@ -211,11 +244,10 @@ class CompilerBridge {
     }
     const process = this.ensureSession(executable);
     const requestId = this.nextRequestId++;
-    let resolveResult: PendingRequest["resolve"];
-    const result = new Promise<CompilerResult>(
-      (resolve) => (resolveResult = resolve),
-    );
-    this.pending.set(requestId, { resolve: resolveResult, command, version });
+    // `consume` settleth a request only with its own kind or an error.
+    const result = new Promise<CompilerResult>((resolve) =>
+      this.pending.set(requestId, { resolve, command, version }),
+    ) as Promise<ResultOf<Command>>;
     process.stdin.write(
       sessionRequest(
         requestId,
@@ -236,7 +268,7 @@ class CompilerBridge {
       cancel: () => this.cancel(requestId, version),
     };
   }
-  ensureSession(executable) {
+  ensureSession(executable: string) {
     if (
       this.session &&
       this.session.exitCode === null &&
@@ -317,7 +349,7 @@ class CompilerBridge {
       pending.resolve(response.result);
     }
   }
-  cancel(requestId, version) {
+  cancel(requestId: number, version: number) {
     const pending = this.pending.get(requestId);
     if (!pending) return;
     this.pending.delete(requestId);
@@ -328,7 +360,10 @@ class CompilerBridge {
       );
     }
   }
-  failSession(process, message) {
+  failSession(
+    process: childProcess.ChildProcessWithoutNullStreams,
+    message: string,
+  ) {
     if (this.session !== process) return;
     this.reset(message);
     if (process.exitCode === null && !process.killed) process.kill();
@@ -337,7 +372,7 @@ class CompilerBridge {
     const process = this.reset("checker request cancelled");
     if (process && process.exitCode === null && !process.killed) process.kill();
   }
-  reset(message) {
+  reset(message: string) {
     const process = this.session;
     this.session = undefined;
     for (const { resolve } of this.pending.values()) {
@@ -362,21 +397,22 @@ class CompilerBridge {
       return this.executable;
     }
     this.executable = this.tongue
-      ? this.findCabalExecutable() || this.findDistExecutable() || findOnPath()
+      ? this.findCabalExecutable(this.tongue) ||
+        this.findDistExecutable(this.tongue) ||
+        findOnPath()
       : findOnPath();
     return this.executable;
   }
-  findCabalExecutable() {
+  findCabalExecutable(tongue: string) {
     const result = childProcess.spawnSync("cabal", ["list-bin", "exe:tung"], {
-      cwd: this.tongue,
+      cwd: tongue,
       encoding: "utf8",
     });
     const found = result.status === 0 ? result.stdout.trim() : "";
     return found && fs.existsSync(found) ? found : undefined;
   }
-  findDistExecutable() {
-    const root = path.join(this.tongue, "dist-newstyle", "build");
-    return findFile(root, (file) =>
+  findDistExecutable(tongue: string) {
+    return findFile(path.join(tongue, "dist-newstyle", "build"), (file) =>
       file.endsWith(path.join("x", "tung", "build", "tung", "tung")),
     );
   }
@@ -399,11 +435,11 @@ const findOnPath = () => {
   }
   return undefined;
 };
-const findFile = (root, predicate) => {
+const findFile = (root: string, predicate: (file: string) => boolean) => {
   if (!fs.existsSync(root)) return undefined;
   const stack = [root];
-  while (stack.length > 0) {
-    const current = stack.pop();
+  let current: string | undefined;
+  while ((current = stack.pop()) !== undefined) {
     const stat = fs.statSync(current);
     if (stat.isFile() && predicate(current)) return current;
     if (stat.isDirectory()) {
@@ -553,11 +589,11 @@ const documentPath = (uri: string | undefined) => {
 // open documents send their unsaved texts by path; the compiler resolveth
 // brings and readeth every other module from disk.
 const sessionRequest = (
-  id,
-  version,
-  command,
-  name,
-  source,
+  id: number,
+  version: number,
+  command: CompilerCommand,
+  name: string,
+  source: string,
   texts: [string, string][],
   path?: string,
   allowedAxioms?: string[],
@@ -573,15 +609,16 @@ const sessionRequest = (
     ...(path === undefined ? {} : { path }),
     ...(allowedAxioms === undefined ? {} : { allowedAxioms }),
   }) + "\n";
-export {
-  CompilerBridge,
+export { CompilerBridge, emptyNames, emptySyntax, sessionRequest };
+export type {
   CompilerDiagnostic,
   CompilerResult,
+  ErrorResult,
   ProofResult,
-  emptyNames,
-  emptySyntax,
-  sessionRequest,
-  SourceRole,
+  ResultOf,
+  Running,
+  SourceDocument,
   SourceNames,
+  SourceRole,
   SourceSyntax,
 };

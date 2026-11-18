@@ -9,6 +9,7 @@ module Tung.Concrete
     concreteTree,
     treeText,
     treeSpan,
+    treePieces,
   )
 where
 
@@ -39,14 +40,16 @@ treeText = \case
 
 -- the span from a tree's first token to its last, without trivia.
 treeSpan :: Tree -> Maybe SourceSpan
-treeSpan tree = case tokenSpans tree of
+treeSpan tree = case map pieceSpan (treePieces tree) of
   [] -> Nothing
   spans@(first : _) -> Just (SourceSpan (spanStart first) (spanEnd (last spans)))
-  where
-    tokenSpans = \case
-      TreeLeaf Leaf {leafPiece = Just piece} -> [pieceSpan piece]
-      TreeLeaf _ -> []
-      TreeNode _ children -> concatMap tokenSpans children
+
+-- a tree's token pieces, in order, without trivia.
+treePieces :: Tree -> [Piece]
+treePieces = \case
+  TreeLeaf Leaf {leafPiece = Just piece} -> [piece]
+  TreeLeaf _ -> []
+  TreeNode _ children -> concatMap treePieces children
 
 -- the marks are node spans from the parser; a mark that doth not cover whole
 -- siblings is left out. a mark covering a whole bracket's inside nesteth in it.
@@ -94,14 +97,9 @@ brackets = fst . go Nothing
                          in (TreeNode BracketNode (tree : inside ++ [closer]) : siblings, final)
                   _ -> let (siblings, final) = go closing afterInside in (tree : inside ++ siblings, final)
         | Just token <- leafToken tree, Just token == closing -> ([], tree : rest)
-        | Just token <- leafToken tree, token `elem` [TRParen, TRBracket, TRBrace], isJust closing -> ([], tree : rest)
+        | Just token <- leafToken tree, isClosingBracket token, isJust closing -> ([], tree : rest)
         | otherwise -> let (siblings, final) = go closing rest in (tree : siblings, final)
-    opening tree = case leafToken tree of
-      Just TLParen -> Just TRParen
-      Just TLBracket -> Just TRBracket
-      Just TLBrace -> Just TRBrace
-      Just (TBraceKeyword _) -> Just TRBrace
-      _ -> Nothing
+    opening tree = leafToken tree >>= closingBracket
 
 leafToken :: Tree -> Maybe Token
 leafToken = \case

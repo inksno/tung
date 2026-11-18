@@ -2,13 +2,12 @@
 module Test.Validate (group) where
 
 import Data.Map.Strict qualified as Map
-import Test.Harness (Group, Test, checkSource)
-import Test.Harness qualified as Harness
-import Tung.Dependent.Source (snapshotImportPaths, sourceSnapshot)
+import Test.Harness (Test, checkSource)
+import Tung.Source (snapshotImportPaths, sourceSnapshot)
 
-group :: IO Group
+group :: IO [Test]
 group =
-  Harness.group "validate" $
+  pure $
     map (uncurry validationOk) accepted
       ++ map (uncurry validationErr) rejected
 
@@ -51,7 +50,7 @@ validationOk, validationErr :: String -> String -> Test
 validationOk name = validationCase name True
 validationErr name = validationCase name False
 
--- a `use` path that nothing provideth is an empty module here.
+-- a `bring` path that nothing provideth is an empty module here.
 validationCase :: String -> Bool -> String -> Test
 validationCase name shouldPass source =
   let imports = Map.fromList [(path, "") | path <- snapshotImportPaths (sourceSnapshot source)]

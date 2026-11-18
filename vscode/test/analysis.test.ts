@@ -73,10 +73,7 @@ test("class parameters resolve inside the braced body", async () => {
   const inside = findDefinition(model, occurrences[1], occurrences[1].offset);
   assert.equal(inside?.role, "typeParameter");
   assert.equal(inside?.token.offset, occurrences[0].offset);
-  assert.equal(
-    findDefinition(model, occurrences.at(-1), occurrences.at(-1).offset),
-    undefined,
-  );
+  assert.equal(findDefinition(model, occurrences.at(-1)), undefined);
 });
 test("instance parameters resolve in requirements, the head, and members", async () => {
   const source = [
@@ -134,23 +131,26 @@ test("requirement parameters respect nested types and owner scope", async () => 
       assert.equal(findDefinition(model, token)?.token.offset, uses[0].offset);
   }
 });
-test("analysis retaineth import paths, aliases, and default namespaces", async () => {
+test("an import's range covereth its path, not its alias", async () => {
   const imports = [
-    ["_foreign.tung", undefined, "_foreign"],
-    ["class/algebra/arithmetic/field.tung", undefined, "field"],
-    ["type/list.tung", "items", "items"],
-    ["type/list.tung", undefined, "list"],
-    ["pkg.one/query.tung", undefined, "query"],
+    ["_foreign.tung", ""],
+    ["class/algebra/arithmetic/field.tung", ""],
+    ["type/list.tung", "items"],
+    ["pkg.one/query.tung", ""],
   ];
-  const model = await analyzed(
-    imports
-      .map(([path, alias]) => `bring ${path}${alias ? ` ${alias}` : ""}`)
-      .join("\n"),
-    "file:///imports.tung",
-  );
+  const source = imports
+    .map(([path, alias]) => `bring ${path}${alias ? ` ${alias}` : ""}`)
+    .join("\n");
+  const model = await analyzed(source, "file:///imports.tung");
   assert.deepEqual(
-    model.imports.map(({ path, alias, namespace }) => [path, alias, namespace]),
-    imports,
+    model.imports.map(({ path, range }) => [path, range]),
+    imports.map(([path], line) => [
+      path,
+      {
+        start: { line, character: "bring ".length },
+        end: { line, character: "bring ".length + path.length },
+      },
+    ]),
   );
 });
 test("analysis attacheth doc comments to following shown declarations", async () => {
@@ -165,57 +165,46 @@ test("analysis attacheth doc comments to following shown declarations", async ()
   ].join("\n");
   const model = await analyzed(source, "file:///docs.tung");
   assert.equal(
-    model.definitions.find(({ name }) => name === "identity").documentation,
+    model.definitions.find(({ name }) => name === "identity")?.documentation,
     "identity value.",
   );
   assert.equal(
     model.definitions.find(
       ({ name, role }) => name === "box" && role === "type",
-    ).documentation,
+    )?.documentation,
     "boxed data.",
   );
 });
 test("local resolution preferreth the narrowest binder scope", async () => {
   const source = "let keep:[x: ℤ, ℤ] ≔ match x { x ^ x }";
   const model = await analyzed(source, "file:///scope.tung");
-  const use = model.tokens.filter(({ text }) => text === "x").at(-1);
-  const definition = findDefinition(model, use, use.offset);
-  assert.equal(definition.role, "parameter");
-  assert.equal(
-    definition.token.offset,
-    model.tokens.filter(({ text }) => text === "x").at(-2).offset,
-  );
+  const occurrences = model.tokens.filter(({ text }) => text === "x");
+  const definition = findDefinition(model, occurrences.at(-1));
+  assert.equal(definition?.role, "parameter");
+  assert.equal(definition?.token.offset, occurrences.at(-2)?.offset);
 });
 test("an unfinished lambda scopeth its binders to the end of the buffer", async () => {
   const source = "let choose ≔ { left, right ^ right";
   const model = await analyzed(source, "file:///incomplete_pattern.tung");
   const occurrences = model.tokens.filter(({ text }) => text === "right");
-  const use = occurrences.at(-1);
-  const definition = findDefinition(model, use, use.offset);
-  assert.equal(definition.token.offset, occurrences[0].offset);
-  assert.equal(definition.scopeEnd, source.length);
+  const definition = findDefinition(model, occurrences.at(-1));
+  assert.equal(definition?.token.offset, occurrences[0].offset);
+  assert.equal(definition?.scopeEnd, source.length);
 });
 test("an unmatched inner delimiter doth not leak a pattern scope", async () => {
   const source = "let choose ≔ ({ left, right ^ right ) let outside ≔ right";
   const model = await analyzed(source, "file:///recovered_pattern.tung");
   const occurrences = model.tokens.filter(({ text }) => text === "right");
-  const innerDefinition = findDefinition(
-    model,
-    occurrences[1],
-    occurrences[1].offset,
-  );
-  assert.equal(innerDefinition.token.offset, occurrences[0].offset);
+  const innerDefinition = findDefinition(model, occurrences[1]);
+  assert.equal(innerDefinition?.token.offset, occurrences[0].offset);
   // the row's scope endeth with its body, before the stray `)`.
-  assert.equal(innerDefinition.scopeEnd, occurrences[1].endOffset);
-  assert.equal(
-    findDefinition(model, occurrences[2], occurrences[2].offset),
-    undefined,
-  );
+  assert.equal(innerDefinition?.scopeEnd, occurrences[1].endOffset);
+  assert.equal(findDefinition(model, occurrences[2]), undefined);
 });
 test("token lookup excludeth the character after a token", async () => {
   const model = await analyzed("let answer ≔ +42", "file:///token.tung");
   assert.equal(
-    tokenAtPosition(model, { line: 0, character: 4 }).text,
+    tokenAtPosition(model, { line: 0, character: 4 })?.text,
     "answer",
   );
   assert.equal(tokenAtPosition(model, { line: 0, character: 10 }), undefined);
@@ -223,7 +212,8 @@ test("token lookup excludeth the character after a token", async () => {
 test("a later slot seeth an earlier one, and a block's let stayeth in its block", async () => {
   const source = "let f: [n: ℕ, x: n fan, ℕ] ≔ (let k ≔ n yield k)\nlet g ≔ k";
   const model = await analyzed(source, "file:///scopes.tung");
-  const named = (text) => model.tokens.filter((token) => token.text === text);
+  const named = (text: string) =>
+    model.tokens.filter((token) => token.text === text);
   const [binder, inSlot] = named("n");
   assert.equal(findDefinition(model, inSlot)?.token.offset, binder.offset);
   const [local, inBody, outside] = named("k");

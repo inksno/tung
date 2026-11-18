@@ -17,9 +17,9 @@ import System.Process (readProcessWithExitCode)
 import Text.Printf (printf)
 import Text.Read (readMaybe)
 import Tung
-import Tung.Dependent (Inferred)
-import Tung.Dependent.Run (ioHost, renderRuntime, requireMain, runMain, runYield)
-import Tung.Dependent.Source (CompileFailure (..), SourceProgram, compileSnapshot, sourceDefinitions, sourceSnapshot)
+import Tung.Core (Inferred)
+import Tung.Run (ioHost, renderRuntime, requireMain, runMain, runYield)
+import Tung.Source (CompileFailure (..), SourceProgram, compileSnapshot, sourceDefinitions, sourceSnapshot)
 
 data Config = Config
   { configRuns :: Int,

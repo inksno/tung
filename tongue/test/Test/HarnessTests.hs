@@ -6,13 +6,13 @@ import Data.List (isInfixOf)
 import Data.Map.Strict qualified as Map
 import Test.Harness qualified as Harness
 
-group :: IO Harness.Group
-group = Harness.group "harness" [selection, fixtureOverrides]
+group :: IO [Harness.Test]
+group = pure [selection, fixtureOverrides]
   where
     selection =
       Harness.expectEq
         "explicit selections reject unknown and empty groups"
-        [Right [1, 2], Left "unknown test groups: absent", Left "unknown test groups: absent", Left "no test groups selected"]
+        [Right [("first", 1), ("second", 2)], Left "unknown test groups: absent", Left "unknown test groups: absent", Left "no test groups selected"]
         (map (Harness.selectGroups [("first", 1 :: Int), ("second", 2)]) ["second first", "absent", "first absent", " "])
 
 -- a changed dependency must invalidate its importer without changing later tests.

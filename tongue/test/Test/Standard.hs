@@ -9,15 +9,15 @@ import Data.Maybe (catMaybes, listToMaybe)
 import Data.Set qualified as Set
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath (takeBaseName, takeDirectory, takeExtension, (</>))
-import Test.DependentSupport (Library, compileAs, compileWith, eraseLevels, libraryModule, loadLibrary, rejectContaining, sameNormalIn)
-import Test.Harness (Group, Test, expectEq)
+import Test.Harness (Test, expectEq)
 import Test.Harness qualified as Harness
 import Test.QuickCheck qualified as QuickCheck
+import Test.Support (Library, accepts, compileAs, compileWith, eraseLevels, libraryModule, loadLibrary, normalisesAll, normalisesTo, rejectContaining, sameNormalIn)
 import Tung
-import Tung.Dependent qualified as Kernel
-import Tung.Dependent.Source qualified as Source
+import Tung.Core qualified as Core
+import Tung.Source qualified as Source
 
-group :: IO Group
+group :: IO [Test]
 group = do
   files <- readLibraryImportFiles "." >>= either fail pure
   imports <- readLibraryImports "." >>= either fail pure
@@ -25,7 +25,7 @@ group = do
   loaded <- loadedSourcesCase files imports
   -- every module is checked once, including disconnected cycles and private bodies.
   library <- loadLibrary (Map.keys imports)
-  Harness.group "standard" $
+  pure $
     registry
       : loaded
       : noUmbrellaDependencyCase files
@@ -56,22 +56,21 @@ equalityCases library =
           "(reflect @ℤ @+1) symmetry",
           "(reflect @ℤ @+1) transit (reflect @ℤ @+1)"
         ],
-    expectEq "library identity supporteth arbitrary types and dependent transport" (Right ()) $
-      ()
-        <$ compile
-          """
-          let reflect_value:[@α:*, x:α, x = x] ≔ reflect
-          let reflect_type:[@α:*, α = α] ≔ reflect
-          let shift_type:[@α:*, @β:*, reflect:α = β, α, β] ≔ {x ^ x}
-          let shift_value:[@α:*, @a:α, @b:α, @P:[α,*], p:a = b, value:a P, b P] ≔ p transport value
-          """,
+    accepts "library identity supporteth arbitrary types and dependent transport" $
+      compile
+        """
+        let reflect_value:[@α:*, x:α, x = x] ≔ reflect
+        let reflect_type:[@α:*, α = α] ≔ reflect
+        let shift_type:[@α:*, @β:*, reflect:α = β, α, β] ≔ {x ^ x}
+        let shift_value:[@α:*, @a:α, @b:α, @P:[α,*], p:a = b, value:a P, b P] ≔ p transport value
+        """,
     rejectContaining "library identity doth not provide axiom K" "axiom K" $
       compile "let k:[@α:*, @a:α, p:a = a, p = reflect] ≔ match p { reflect ^ reflect }",
     rejectContaining "transit requireth matching middle endpoints" "cannot unify" $
       compile "let bad ≔ (reflect @ℤ @+1) transit (reflect @ℤ @+2)"
   ]
   where
-    compile source = compileWith library "is_test.tung" ("bring is.tung\n" ++ source)
+    compile source = compileWith library "is_test.tung" ("bring is.tung " ++ source)
 
 -- canonical finite sets prove their laws in identity, with no added assumptions.
 setCases :: Library -> [Test]
@@ -80,17 +79,16 @@ setCases library =
       program <- compile laws
       audits <- traverse (Source.auditProof program) ["join_swap", "meet_swap", "join_associate", "distribute", "least", "equal_sound"]
       mapM_ (Source.verifyProof program True (Just [])) audits,
-    expectEq "finite sets normalise order, repetition, and empty joins" (Right (replicate 6 True)) do
-      program <- compile values
-      traverse
-        (uncurry (sameNormalIn program))
-        [ ("left", "right"),
-          ("left to_list", "nay ‥ (yea ‥ list~empty)"),
-          ("left ⋎ right", "left"),
-          ("left ⋏ right", "left"),
-          ("set~empty ⋎ left", "left"),
-          ("(left set~∖ (yea set~onesome)) to_list", "nay ‥ list~empty")
-        ],
+    normalisesAll
+      "finite sets normalise order, repetition, and empty joins"
+      (compile values)
+      [ ("left", "right"),
+        ("left to_list", "nay ‥ (yea ‥ list~empty)"),
+        ("left ⋎ right", "left"),
+        ("left ⋏ right", "left"),
+        ("set~empty ⋎ left", "left"),
+        ("(left set~∖ (yea set~onesome)) to_list", "nay ‥ list~empty")
+      ],
     rejectContaining "finite sets need a lawful element order" "order_total" $
       compile "type token:* { only:token } let bad:token set ≔ set~empty",
     rejectContaining "the raw finite set constructor stayeth private" "unknown name 'ordered'" $
@@ -138,15 +136,11 @@ numberCases library =
     agreement "ℤ" (libraryModule library "type/integer.tung") ["equal", "at_most", "add", "subtract", "multiply", "divide_leftover"] (-12, 12) signed,
     agreement "unicode" (libraryModule library "type/unicode.tung") ["equal", "at_most"] (0, 3) (\index -> ['`', characters !! index]),
     agreement "string" (libraryModule library "type/string/building.tung") ["equal_string", "at_most_string", "join_string"] (0, 40) (\index -> "'" ++ spelled index ++ "'"),
-    expectEq "a modelled operation is proved by computation and by induction" (Right ()) $
-      () <$ compileWith library "natural_proof.tung" proofs,
-    expectEq "sums, powers, choices, and least divisors compute on literals" (Right (replicate 6 True)) do
-      program <- compileWith library "counting_test.tung" counting
-      traverse
-        (uncurry (sameNormalIn program))
-        [("5 Σ {i ^ i}", "10"), ("2 power 10", "1024"), ("5 !", "120"), ("5 choose 2", "10"), ("91 least_divisor", "7"), ("3 prime_above", "7")],
-    expectEq "the counting, prime, and diagonal theorems apply at concrete values" (Right ()) $
-      () <$ compileWith library "counting_test.tung" (counting ++ theorems),
+    accepts "a modelled operation is proved by computation and by induction" $
+      compileWith library "natural_proof.tung" proofs,
+    normalisesAll "sums, powers, choices, and least divisors compute on literals" (compileWith library "counting_test.tung" counting) [("5 Σ {i ^ i}", "10"), ("2 power 10", "1024"), ("5 !", "120"), ("5 choose 2", "10"), ("91 least_divisor", "7"), ("3 prime_above", "7")],
+    accepts "the counting, prime, and diagonal theorems apply at concrete values" $
+      compileWith library "counting_test.tung" (counting ++ theorems),
     rejectContaining "a wrong sum is rejected" "cannot unify" $
       compileWith library "counting_test.tung" (counting ++ "let bad: (4 Σ {i ^ i}) = 7 ≔ reflect"),
     rejectContaining "no tale reacheth the diagonal subset" "cannot unify" $
@@ -170,11 +164,11 @@ numberCases library =
       -- a host binding and its model share universe parameters.
       (symbol, levels) <-
         Source.normaliseSourceExpression program operation >>= \case
-          Kernel.Global symbol levels -> Right (symbol, levels)
+          Core.Global symbol levels -> Right (symbol, levels)
           other -> Left ("not a global: " ++ show other)
       m <- Source.normaliseSourceExpression program left
       n <- Source.normaliseSourceExpression program right
-      modelled <- Kernel.normalise (Source.sourceEnvironment program) (Kernel.Apply Kernel.Explicit (Kernel.Apply Kernel.Explicit (Kernel.Global (modelSymbol symbol) levels) m) n)
+      modelled <- Core.normalise (Source.sourceEnvironment program) (Core.Apply Core.Explicit (Core.Apply Core.Explicit (Core.Global (modelSymbol symbol) levels) m) n)
       expected <- Source.normaliseSourceExpression program native
       pure (eraseLevels modelled == eraseLevels expected)
     proofs =
@@ -221,45 +215,37 @@ numberCases library =
 -- needeth quotients, and false round trips are rejected.
 yonedaCases :: Library -> [Test]
 yonedaCases library =
-  [ expectEq "lifting a value and taking it back computeth to the value" (Right True) $
-      compile "" >>= \program -> sameNormalIn program "((+3 some) lift) unlift" "+3 some",
-    expectEq "a proved round trip computeth to reflect" (Right ()) $
-      () <$ compile "let back: (((+3 some) lift) unlift) = (+3 some) ≔ (+3 some) unlift_lift",
+  [ normalisesTo "lifting a value and taking it back computeth to the value" (compile "") "((+3 some) lift) unlift" "+3 some",
+    accepts "a proved round trip computeth to reflect" $
+      compile "let back: (((+3 some) lift) unlift) = (+3 some) ≔ (+3 some) unlift_lift",
     rejectContaining "the transformation direction needeth a naturality proof" "cannot unify" $
       compile "let bad: [n: optional yoneda ℤ, f: [ℤ, ℤ], (f ((n unlift) lift)) = (f n)] ≔ n lift_unlift reflect f",
     rejectContaining "lifting doth not give the value under another function" "cannot unify" $
       compile "let bad: [a: ℤ optional, ({x ^ x + +1} (a lift)) = a] ≔ a unlift_lift",
-    expectEq "yoneda_co mappeth a type that hath no functor" (Right ()) $
-      () <$ compileCo "type twice: [α: *, *] { twice_of: [α, α, α twice] }\nlet changed: twice yoneda_co string ≔ ((+1 twice_of +2) yoneda_co~lift) map to_string",
-    expectEq "yoneda_co unlifteth after composed changes" (Right True) $
-      compileCo "let changed ≔ (((+1 some) yoneda_co~lift) map {x ^ x + +1}) map {x ^ x + +1}"
-        >>= \program -> sameNormalIn program "changed yoneda_co~unlift" "+3 some",
-    expectEq "a yoneda_co round trip computeth to the value" (Right True) $
-      compileCo "" >>= \program -> sameNormalIn program "((+3 some) yoneda_co~lift) yoneda_co~unlift" "+3 some",
+    accepts "yoneda_co mappeth a type that hath no functor" $
+      compileCo "type twice: [α: *, *] { twice_of: [α, α, α twice] } let changed: twice yoneda_co string ≔ ((+1 twice_of +2) yoneda_co~lift) map to_string",
+    normalisesTo "yoneda_co unlifteth after composed changes" (compileCo "let changed ≔ (((+1 some) yoneda_co~lift) map {x ^ x + +1}) map {x ^ x + +1}") "changed yoneda_co~unlift" "+3 some",
+    normalisesTo "a yoneda_co round trip computeth to the value" (compileCo "") "((+3 some) yoneda_co~lift) yoneda_co~unlift" "+3 some",
     rejectContaining "a yoneda_co is not the lift of its unlift without quotients" "cannot unify" $
       compileCo "let bad: [c: optional yoneda_co ℤ, ((c yoneda_co~unlift) yoneda_co~lift) = c] ≔ reflect"
   ]
   where
-    compile source = compileWith library "yoneda_test.tung" ("bring type/optional.tung\nbring often.tung\nbring yoneda.tung\n" ++ source)
-    compileCo source = compileWith library "coyoneda_test.tung" ("bring type/optional.tung\nbring often.tung\nbring yoneda_co.tung\n" ++ source)
+    compile source = compileWith library "yoneda_test.tung" ("bring type/optional.tung bring often.tung bring yoneda.tung " ++ source)
+    compileCo source = compileWith library "coyoneda_test.tung" ("bring type/optional.tung bring often.tung bring yoneda_co.tung " ++ source)
 
 -- the group theorems hold for signs under multiplication; a monoid whose
 -- values lack inverses cannot be a group.
 groupCases :: Library -> [Test]
 groupCases library =
-  [ expectEq "the inverse of a product computeth for a small group" (Right [True, True]) do
-      program <- compile ""
-      traverse
-        (uncurry (sameNormalIn program))
-        [("(minus · minus) /", "plus"), ("minus /· plus", "minus")],
-    expectEq "group theorems apply to a concrete group" (Right ()) $
-      () <$ compile "let twice: ((minus /) /) = minus ≔ minus /_/\nlet turned: ((plus · minus) /) = ((minus /) · (plus /)) ≔ plus /_over_· minus",
-    expectEq "the homomorphism theorems apply to a concrete homomorphism" (Right ()) $
-      () <$ compile "bring group_homomorphism.tung\nlet trivial: [sign, sign] ≔ {_ ^ plus}\nlet hom: trivial homomorphic ≔ {_, _ ^ reflect}\nlet sent: ((one: sign) trivial) = one ≔ trivial one_f hom\nlet same: (plus trivial) = (minus trivial) ≔ trivial kernel_fibre hom plus minus (trivial fibre_kernel hom plus minus reflect)",
+  [ normalisesAll "the inverse of a product computeth for a small group" (compile "") [("(minus · minus) /", "plus"), ("minus /· plus", "minus")],
+    accepts "group theorems apply to a concrete group" $
+      compile "let twice: ((minus /) /) = minus ≔ minus /_/ let turned: ((plus · minus) /) = ((minus /) · (plus /)) ≔ plus /_over_· minus",
+    accepts "the homomorphism theorems apply to a concrete homomorphism" $
+      compile "bring group_homomorphism.tung let trivial: [sign, sign] ≔ {_ ^ plus} let hom: trivial homomorphic ≔ {_, _ ^ reflect} let sent: ((one: sign) trivial) = one ≔ trivial one_f hom let same: (plus trivial) = (minus trivial) ≔ trivial kernel_fibre hom plus minus (trivial fibre_kernel hom plus minus reflect)",
     rejectContaining "a map that turneth signs is no homomorphism" "cannot unify" $
-      compile "bring group_homomorphism.tung\nlet turn: [sign, sign] ≔ {plus ^ minus, minus ^ plus}\nlet bad: turn homomorphic ≔ {_, _ ^ reflect}",
+      compile "bring group_homomorphism.tung let turn: [sign, sign] ≔ {plus ^ minus, minus ^ plus} let bad: turn homomorphic ≔ {_, _ ^ reflect}",
     rejectContaining "a value without an inverse maketh no group" "cannot unify" $
-      compileWith library "group_test.tung" "bring often.tung\nbring is.tung\nbring class/algebra/total/group_multiply.tung\nbizen: 𝟚 group_· { let /: [a:] ≔ a let ·_/ ≔ {yea ^ reflect, nay ^ reflect} let /_· ≔ {yea ^ reflect, nay ^ reflect} }"
+      compileWith library "group_test.tung" "bring often.tung bring is.tung bring class/algebra/total/group_multiply.tung bizen: 𝟚 group_· { let /: [a:] ≔ a let ·_/ ≔ {yea ^ reflect, nay ^ reflect} let /_· ≔ {yea ^ reflect, nay ^ reflect} }"
   ]
   where
     compile source = compileWith library "group_test.tung" (sign ++ source)
@@ -283,15 +269,14 @@ groupCases library =
 -- every ring is a module over itself; a module needeth a ring of scalars.
 moduleCases :: Library -> [Test]
 moduleCases library =
-  [ expectEq "a ring acteth on itself by multiplication" (Right True) $
-      compile "" >>= \program -> sameNormalIn program "+3 ∘ +4" "+12",
-    expectEq "the module laws of a ring over itself are proved" (Right ()) $
-      () <$ compile "let law: [r: ℤ, s: ℤ, a: ℤ, ((r · s) ∘ a) = (r ∘ (s ∘ a))] ≔ r ·_∘ s a",
+  [ normalisesTo "a ring acteth on itself by multiplication" (compile "") "+3 ∘ +4" "+12",
+    accepts "the module laws of a ring over itself are proved" $
+      compile "let law: [r: ℤ, s: ℤ, a: ℤ, ((r · s) ∘ a) = (r ∘ (s ∘ a))] ≔ r ·_∘ s a",
     rejectContaining "floats are no ring of scalars" "no bizen" $
       compile "let bad: float ≔ 2.0 ∘ 3.0"
   ]
   where
-    compile source = compileWith library "module_test.tung" ("bring often.tung\nbring class/algebra/total/module.tung\n" ++ source)
+    compile source = compileWith library "module_test.tung" ("bring often.tung bring class/algebra/total/module.tung " ++ source)
 
 -- a relation with nothing smaller is well-founded, and recursion on it runneth
 -- the step once.
@@ -300,8 +285,8 @@ moduleCases library =
 -- lying under goeth through meets, but a part lieth not under its meet.
 topologyCases :: Library -> [Test]
 topologyCases library =
-  [ expectEq "the discrete topology maketh every function continuous" (Right ()) $
-      () <$ compile discrete,
+  [ accepts "the discrete topology maketh every function continuous" $
+      compile discrete,
     rejectContaining "a topology must open the whole part" "cannot unify one~𝟙 with zero~𝟘" $
       compile
         """
@@ -314,13 +299,12 @@ topologyCases library =
           let join_open: [_:, _:] ≔ only
         }
         """,
-    expectEq "lying under goeth through meets" (Right ()) $
-      ()
-        <$ compile
-          """
-          let left_twice: [@α: *, u: [α, *], v: [α, *], w: [α, *], ((u meet v) meet w) subset u]
-            ≔ ((u meet v) meet w) subset_transit (u meet v) u ((u meet v) meet_subset_former w) (u meet_subset_former v)
-          """,
+    accepts "lying under goeth through meets" $
+      compile
+        """
+        let left_twice: [@α: *, u: [α, *], v: [α, *], w: [α, *], ((u meet v) meet w) subset u]
+          ≔ ((u meet v) meet w) subset_transit (u meet v) u ((u meet v) meet_subset_former w) (u meet_subset_former v)
+        """,
     rejectContaining "a part lieth not under its meet" "cannot unify" $
       compile "let bad: [@α: *, u: [α, *], v: [α, *], u subset (u meet v)] ≔ {_, held ^ held}"
   ]
@@ -353,22 +337,21 @@ topologyCases library =
 -- a preorder with an equality that holdeth everywhere is not one.
 lawCases :: Library -> [Test]
 lawCases library =
-  [ expectEq "dividing by a divisor other than zero yieldeth an outcome" (Right ()) $
-      ()
-        <$ compileWith
-          library
-          "euclidean_test.tung"
-          """
-          bring class/algebra/total/euclidean.tung
-          bring class/algebra/total/hath_divide_leftover.tung
-          bring type/optional.tung
-          bring type/two.tung
-          bring type/integer.tung
-          bring is.tung
-          let divided: ((+7 % -2) is_some) = yea ≔ +7 %_some -2 {k ^ match k {}}
-          """,
+  [ accepts "dividing by a divisor other than zero yieldeth an outcome" $
+      compileWith
+        library
+        "euclidean_test.tung"
+        """
+        bring class/algebra/total/euclidean.tung
+        bring class/algebra/total/hath_divide_leftover.tung
+        bring type/optional.tung
+        bring type/two.tung
+        bring type/integer.tung
+        bring is.tung
+        let divided: ((+7 % -2) is_some) = yea ≔ +7 %_some -2 {k ^ match k {}}
+        """,
     rejectContaining "an empty vector hath no head" "cannot unify" $
-      compileWith library "vector_test.tung" "bring type/vector.tung m\nlet bad: ℤ ≔ m~empty m~head",
+      compileWith library "vector_test.tung" "bring type/vector.tung m let bad: ℤ ≔ m~empty m~head",
     rejectContaining "a lax identity maketh no partial order" "cannot unify" $
       compileWith
         library
@@ -391,39 +374,38 @@ lawCases library =
         """,
     -- `𝟚` with `a ÷ yea` as `a` is the two-element field; a division that
     -- undoeth no multiplying is no division ring.
-    expectEq "𝟚 is a division ring and a field" (Right ()) $
-      () <$ compileWith library "field_test.tung" (twoField "[a:, _:] ≔ a"),
+    accepts "𝟚 is a division ring and a field" $
+      compileWith library "field_test.tung" (twoField "[a:, _:] ≔ a"),
     rejectContaining "a lax division maketh no division ring" "cannot unify" $
       compileWith library "division_ring_test.tung" (twoField "[_:, _:] ≔ nay"),
     -- `zero` alone is an ideal of `ℤ`; a part without `zero` is none.
-    expectEq "zero alone is an ideal of the integers" (Right ()) $
-      () <$ compileWith library "ideal_test.tung" (integerIdeal "let zeros: {a: ℤ ^ a = +0} ideal ≔ zero_ideal"),
+    accepts "zero alone is an ideal of the integers" $
+      compileWith library "ideal_test.tung" (integerIdeal "let zeros: {a: ℤ ^ a = +0} ideal ≔ zero_ideal"),
     rejectContaining "a part without zero is no ideal" "cannot unify" $
       compileWith library "ideal_test.tung" (integerIdeal "let ones: {a: ℤ ^ a = +1} ideal ≔ reflect ideal_of sorry sorry sorry sorry"),
     -- the identity keepeth sums and products, so its kernel is an ideal; a
     -- shift keepeth no sum.
-    expectEq "the kernel of a ring homomorphism is an ideal" (Right ()) $
-      () <$ compileWith library "ring_homomorphism_test.tung" (integerHomomorphism "{a ^ a}" ++ "let ideal_kernel: (f kernel) ideal ≔ f kernel_ideal hom\n"),
+    accepts "the kernel of a ring homomorphism is an ideal" $
+      compileWith library "ring_homomorphism_test.tung" (integerHomomorphism "{a ^ a}" ++ "let ideal_kernel: (f kernel) ideal ≔ f kernel_ideal hom "),
     rejectContaining "a shift is no ring homomorphism" "cannot unify" $
       compileWith library "ring_homomorphism_test.tung" (integerHomomorphism "_ + +1"),
     -- a box keepeth identity and composition, and taking identity is
     -- natural; a pair whose map swappeth its sides keepeth no identity.
-    expectEq "a box is a functor with a natural identity" (Right ()) $
-      ()
-        <$ compileWith
-          library
-          "functor_test.tung"
-          ( functorPrelude
-              ++ """
-                 type box: [α: *, *] { wrap: [α, α box] }
-                 bizen: → ⇒ → box {
-                   let map: [f:, b:] ≔ match b { a wrap ^ (a f) wrap }
-                   let map_identity: [@α: *] ≔ {c: α box ^ match c { a wrap ^ reflect }} extend
-                   let map_▷: [@α: *, @β: *, @γ: *, _:, _:] ≔ {c: α box ^ match c { a wrap ^ reflect }} extend
-                 }
-                 let same: ((identity @→): [@α: *, (α box) → (α box)]) ⇛ @→ @→ ≔ identity_⇛ @→ @→
-                 """
-          ),
+    accepts "a box is a functor with a natural identity" $
+      compileWith
+        library
+        "functor_test.tung"
+        ( functorPrelude
+            ++ """
+               type box: [α: *, *] { wrap: [α, α box] }
+               bizen: → ⇒ → box {
+                 let map: [f:, b:] ≔ match b { a wrap ^ (a f) wrap }
+                 let map_identity: [@α: *] ≔ {c: α box ^ match c { a wrap ^ reflect }} extend
+                 let map_▷: [@α: *, @β: *, @γ: *, _:, _:] ≔ {c: α box ^ match c { a wrap ^ reflect }} extend
+               }
+               let same: ((identity @→): [@α: *, (α box) → (α box)]) ⇛ @→ @→ ≔ identity_⇛ @→ @→
+               """
+        ),
     rejectContaining "a map that swappeth sides keepeth no identity" "cannot unify" $
       compileWith
         library
@@ -449,10 +431,10 @@ lawCases library =
 
       """
     integerHomomorphism function =
-      "bring often.tung\nbring ideal.tung\nbring ring_homomorphism.tung\nbring is.tung\n"
+      "bring often.tung bring ideal.tung bring ring_homomorphism.tung bring is.tung "
         ++ ("let f: [ℤ, ℤ] ≔ " ++ function ++ "\n")
-        ++ "let hom: f homomorphic ≔ {_, _ ^ reflect} homomorphic_of {_, _ ^ reflect}\n"
-    integerIdeal declaration = "bring often.tung\nbring ideal.tung\nbring is.tung\n" ++ declaration
+        ++ "let hom: f homomorphic ≔ {_, _ ^ reflect} homomorphic_of {_, _ ^ reflect} "
+    integerIdeal declaration = "bring often.tung bring ideal.tung bring is.tung " ++ declaration
     twoField division = "bizen: 𝟚 hath_÷ { let ÷: " ++ division ++ " }\n" ++ twoFieldLaws
     twoFieldLaws =
       """
@@ -486,10 +468,7 @@ lawCases library =
 
 accessibleCases :: Library -> [Test]
 accessibleCases library =
-  [ expectEq "well-founded recursion computeth its step" (Right True) do
-      program <- compileWith library "accessible_test.tung" source
-      sameNormalIn program "answer" "4"
-  ]
+  [normalisesTo "well-founded recursion computeth its step" (compileWith library "accessible_test.tung" source) "answer" "4"]
   where
     source =
       """
@@ -504,14 +483,16 @@ accessibleCases library =
 -- must be rejected for the stated reason, without `sorry`.
 soundnessCases :: Library -> [Test]
 soundnessCases library =
-  [ expectEq "a closed instance of a proved theorem computeth to reflect" (Right True) do
-      program <-
-        compile
+  [ normalisesTo
+      "a closed instance of a proved theorem computeth to reflect"
+      ( compile
           """
           let closed: ((1 ‥ (2 ‥ empty)) reverse $ reverse) = (1 ‥ (2 ‥ empty)) ≔ (1 ‥ (2 ‥ empty)) reverse_reverse
           let direct: ((1 ‥ (2 ‥ empty)) reverse $ reverse) = (1 ‥ (2 ‥ empty)) ≔ reflect
           """
-      sameNormalIn program "closed" "direct",
+      )
+      "closed"
+      "direct",
     rejectContaining "a list is not its own double" "cannot unify" $
       compile "let bad: [l: ℕ list, (l · l) = l] ≔ reflect",
     rejectContaining "appending is not commutative" "cannot unify" $
@@ -533,7 +514,7 @@ soundnessCases library =
     rejectContaining "a list of one type is not a list of another" "cannot unify ℕ with" $
       compile "let bad: [ℕ list, 𝟚 list] ≔ {l ^ l}",
     rejectContaining "a host binding cannot inhabit an empty type" "requireth a different type" $
-      compileAs "soundness_host.tung" "type void: * {}\nlet bad: void ≔ 'add_natural' foreign",
+      compileAs "soundness_host.tung" "type void: * {} let bad: void ≔ 'add_natural' foreign",
     -- a wrong model proveth `(a e 0) = 0` by induction, and carrying that to a
     -- literal computeth `1 = 0`; only the tested library model is trusted.
     rejectContaining "a program cannot trust its own model of a host operation" "belongeth to type/natural.tung" $

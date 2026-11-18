@@ -17,16 +17,15 @@ import System.FilePath (takeExtension)
 import System.IO.Error (isDoesNotExistError)
 import System.Process (readProcess)
 import System.Timeout qualified as Timeout
-import Test.Harness (Group, Test, checkFileSource, evaluateSource, runMainSource)
-import Test.Harness qualified as Harness
+import Test.Harness (Test, checkFileSource, evaluateSource, runMainSource)
 import Tung (readLibraryImports)
 
-group :: IO Group
+group :: IO [Test]
 group = do
   imports <- readLibraryImports "." >>= either fail pure
   byspels <- byspelFiles
   benchmarks <- benchmarkFiles
-  Harness.group "integration" $
+  pure $
     map (runnableFileCase imports) (byspels ++ benchmarks)
       ++ [mainEntry imports, rejectedMain imports, fibonacciSampleResult imports, fileRoundTrip imports, webServerRoundTrip imports]
 

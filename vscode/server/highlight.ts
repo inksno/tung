@@ -23,6 +23,19 @@ const tokenModifiers = [
   "applied",
   "typeFunction",
 ];
+type HighlightToken = {
+  text: string;
+  offset: number;
+  line: number;
+  char: number;
+};
+type HighlightRange = {
+  line: number;
+  char: number;
+  length: number;
+  type: string;
+  modifiers: string[];
+};
 // parser roles identify syntax. checking telleth whether a resolved global
 // nameth a type, which syntax cannot: a value written in an annotation, as
 // `zero` in `(zero · a) = zero`, is no type. workspace resolution only
@@ -30,9 +43,11 @@ const tokenModifiers = [
 const buildHighlightRanges = (
   source: string,
   roles: SourceRole[],
-  resolveDefinition,
+  resolveDefinition: (
+    token: HighlightToken,
+  ) => { role: string; callableConstructor?: boolean } | undefined,
   checkedType: (start: number) => boolean | undefined = () => undefined,
-) => {
+): HighlightRange[] => {
   // plain terms need no lookup when the file cannot contain visible
   // constructors. these compiler hints avoid eager navigation analysis.
   const needsResolution = roles.some(
@@ -44,12 +59,12 @@ const buildHighlightRanges = (
     lineStarts.push(newline.index + newline[0].length);
   }
   let line = 0;
-  const ranges = [];
+  const ranges: HighlightRange[] = [];
   for (const [start, end, role, originalModifiers] of roles) {
     // compiler ranges are ordered UTF-16 offsets, matching the lsp encoding.
     while (line + 1 < lineStarts.length && lineStarts[line + 1] <= start)
       line++;
-    const token = {
+    const token: HighlightToken = {
       text: source.slice(start, end),
       offset: start,
       line,

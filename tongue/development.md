@@ -74,46 +74,65 @@ source text
 - editor analysis may approximate incomplete source; compiler results stay
   authoritative.
 
-| module                                 | responsibility                                                                                      |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `Tung.Token`                           | lexical syntax, lossless pieces, and utf-16 source locations                                        |
-| `Tung.Concrete`                        | the lossless concrete syntax tree from pieces and parser marks                                      |
-| `Tung.Highlight`                       | roles, tokens, declarations, imports, and rows of one parse for editors                             |
-| `Tung.Dependent.Source.Parse`          | declarations, expressions, source roles, node marks, and recovery                                   |
-| `Tung.Dependent.Source.Syntax`         | one source expression syntax and lexical free-name analysis for types and values                    |
-| `Tung.Dependent.Source.Environment`    | checked module state, checking references, name visibility, exports, and class registries           |
-| `Tung.Dependent.Source.Proof`          | dependency closure, assumption auditing, and axiom policy checking                                  |
-| `Tung.Dependent.Source.Render`         | type-directed field names in source types, goals, and proof audits                                  |
-| `Tung.Dependent.Source.Module`         | import graphs, namespaces, and declaration scheduling                                               |
-| `Tung.Dependent.Source.Error`          | structured source failures, locations, and diagnostic context                                       |
-| `Tung.Dependent.Source.Instance`       | dictionary goals, candidate selection, and inherited instance search                                |
-| `Tung.Dependent.Source.Pattern`        | structural and course-of-values recursion lowering; facade for pattern compilation                  |
-| `Tung.Dependent.Source.Pattern.Match`  | pattern matrices, coverage, row splitting, and literal rows                                         |
-| `Tung.Dependent.Source.Pattern.Index`  | index unification and refined motives for indexed splits                                            |
-| `Tung.Dependent.Source.Pattern.Common` | match types, family splits, binder walks, and memo records                                          |
-| `Tung.Dependent.Source.Scope`          | lexical contexts, local binding transitions, and a stack of active recursion evidence               |
-| `Tung.Dependent.Source.Expression`     | bidirectional expression checking, application, field access, matches, and local definitions        |
-| `Tung.Dependent.Source.Elaborate`      | one declaration's elaboration run, checking references, goal rendering, and the unsolved-hole check |
-| `Tung.Dependent.Source.Declaration`    | lets, host bindings, types, classes, bizens, and law proofs                                         |
-| `Tung.Dependent.Source`                | public source facade: snapshot compilation and expression queries                                   |
-| `Tung.Dependent.Syntax`                | core terms, binder-aware traversals, product telescopes, and application spines                     |
-| `Tung.Dependent.Elaboration`           | contextual metavariables, unification, and speculative checking                                     |
-| `Tung.Dependent.Check`                 | independent kernel checking and checked environments                                                |
-| `Tung.Dependent.Inductive`             | positivity, nested specialisation, and checked eliminator rules                                     |
-| `Tung.Dependent.Normalise`             | glued normalisation by evaluation, conversion and display quotation                                 |
-| `Tung.Dependent.Universe`              | universe constraints and exact entailment                                                           |
-| `Tung.Dependent.Render`                | source-style core rendering, with visible aliases for diagnostics                                   |
-| `Tung.Dependent.Host`                  | trusted primitive definitions and host signature checking                                           |
-| `Tung.Dependent.Literal`               | literal types and host value conversion                                                             |
-| `Tung.Dependent.Run`                   | erased evaluation and effect execution                                                              |
-| `Tung.Primitive`                       | one host catalogue, nominal constructor identities, and pure operations                             |
-| `Tung.Diagnostic`                      | source failures rendered for command-line and editor clients                                        |
+the library's modules form layers. a module importeth only from its own
+layer or an earlier one, and the `layering` test group refuseth a module
+without a layer:
 
-`Tung` exposeth source services, diagnostics, metadata, and library and
-project loading; `Tung.Dependent` the checked core. source compilation and
-erased execution have separate facades, `Tung.Dependent.Source` and
-`Tung.Dependent.Run`. commands and the editor use one compiler. module-local
-invariants live beside the code.
+| layer       | modules                                                                                                                                        |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| foundations | `Tung.Token`, `Tung.Concrete`, `Tung.Identity`, `Tung.Name`, `Tung.Primitive`, `Tung.Web`                                                      |
+| core        | `Tung.Core` and `Tung.Core.*`: core terms, normalisation, universes, inductive families, and kernel checking                                   |
+| source      | `Tung.Source` and `Tung.Source.*`: parsing, elaboration, instance search, patterns, modules, and interfaces                                    |
+| runner      | `Tung.Run`: erased evaluation and effect execution                                                                                             |
+| clients     | `Tung`, `Tung.Format` and `Tung.Format.*`, `Tung.Highlight`, `Tung.Project`, `Tung.Library`, `Tung.Diagnostic`, `Tung.Editor`, `Tung.Metadata` |
+
+| module                         | responsibility                                                                                      |
+| ------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `Tung.Token`                   | lexical syntax, lossless pieces, and utf-16 source locations                                        |
+| `Tung.Concrete`                | the lossless concrete syntax tree from pieces and parser marks                                      |
+| `Tung.Primitive`               | one host catalogue, nominal constructor identities, and pure operations                             |
+| `Tung.Core.Syntax`             | core terms, binder-aware traversals, product telescopes, and application spines                     |
+| `Tung.Core.Check`              | independent kernel checking and checked environments                                                |
+| `Tung.Core.Inductive`          | positivity, nested specialisation, and checked eliminator rules                                     |
+| `Tung.Core.Normalise`          | glued normalisation by evaluation, conversion and display quotation                                 |
+| `Tung.Core.Universe`           | universe constraints and exact entailment                                                           |
+| `Tung.Core.Render`             | source-style core rendering, with visible aliases for diagnostics                                   |
+| `Tung.Core.Host`               | trusted primitive definitions and host signature checking                                           |
+| `Tung.Core.Literal`            | literal types and host value conversion                                                             |
+| `Tung.Source.Parse`            | declarations, expressions, source roles, node marks, and recovery                                   |
+| `Tung.Source.Syntax`           | one source expression syntax and lexical free-name analysis for types and values                    |
+| `Tung.Source.Unify`            | the elaboration monad: contextual metavariables, unification, speculative checking, recorded goals  |
+| `Tung.Source.Environment`      | checked module state, checking references, name visibility, exports, and class registries           |
+| `Tung.Source.Proof`            | dependency closure, assumption auditing, and axiom policy checking                                  |
+| `Tung.Source.Render`           | type-directed field names in source types, goals, and proof audits                                  |
+| `Tung.Source.Module`           | import graphs, namespaces, and declaration scheduling                                               |
+| `Tung.Source.Cache`            | checked module interfaces on disk                                                                   |
+| `Tung.Source.Error`            | structured source failures, locations, and diagnostic context                                       |
+| `Tung.Source.Instance`         | dictionary goals, candidate selection, and inherited instance search                                |
+| `Tung.Source.Pattern`          | structural and course-of-values recursion lowering; facade for pattern compilation                  |
+| `Tung.Source.Pattern.Match`    | pattern matrices, coverage, row splitting, and literal rows                                         |
+| `Tung.Source.Pattern.Index`    | index unification and refined motives for indexed splits                                            |
+| `Tung.Source.Pattern.Common`   | match types, family splits, binder walks, and memo records                                          |
+| `Tung.Source.Scope`            | lexical contexts, local binding transitions, and a stack of active recursion evidence               |
+| `Tung.Source.Expression`       | bidirectional expression checking, application, field access, matches, and local definitions        |
+| `Tung.Source.Elaborate`        | one declaration's elaboration run, checking references, goal rendering, and the unsolved-hole check |
+| `Tung.Source.Declaration`      | lets, host bindings, types, classes, bizens, and law proofs                                         |
+| `Tung.Source`                  | public source facade: snapshot and cached import compilation, audits, and expression queries        |
+| `Tung.Run`                     | erased evaluation, effect execution, and the process host                                           |
+| `Tung.Format`                  | the canonical tidier: a document built from the concrete tree                                       |
+| `Tung.Format.Shorten`          | token rewrites before layout: η-expansions, redundant parentheses, and nested products              |
+| `Tung.Format.Layout`           | the wadler–leijen layout to the line limit, and case-row alignment                                  |
+| `Tung.Highlight`               | roles, tokens, declarations, imports, and rows of one parse for editors                             |
+| `Tung.Project`, `Tung.Library` | project loading and manifest resolution                                                             |
+| `Tung.Diagnostic`              | source failures, goals, and the proof report as command-line and editor clients print them          |
+| `Tung.Editor`                  | the editor session protocol                                                                         |
+
+`Tung` exposeth source services, diagnostics, the editor session, metadata,
+and library and project loading; `Tung.Core` the checked core. source
+compilation and erased execution have separate facades, `Tung.Source` and
+`Tung.Run`. the executable's `Main` parseth commands and printeth their
+results; commands and the editor use one compiler. module-local invariants
+live beside the code.
 
 ## projects and imports
 
@@ -129,7 +148,11 @@ reporteth it at its span; the command line refuseth both.
 `compileImports` compileth reached modules once into a map of `SourceProgram`
 values; `compileSnapshot` reuseth it for a root module and returneth any
 yielded expression. both take parsed snapshots and return structured failures;
-test adapters live in `Test.Compile`. a program holdeth a checked kernel
+test adapters live in `Test.Compile`. `compileImportsCached` is the one
+interface-cache path of the command line and the editor: it keepeth known
+modules, loadeth saved interfaces for the rest, checketh what remaineth, and
+saveth it, returning the modules available before checking so a failure can
+still recover goals. a program holdeth a checked kernel
 environment and its visible and exported names; private definitions serve
 checked terms without becoming visible. `SourceProgram` is abstract: its
 environment, exports, and hole queries are functions, and its record labels
@@ -171,8 +194,8 @@ beside the nearest `tung.yaml`, or beside the file without one.
   rebuilt environment. loading trusteth checked output and doth not rerun the
   kernel.
 
-an editor session reuseth compiled imports by transitive interface key: an
-edited import invalidateth its dependants only. the session cacheth the last
+an editor session, in `Tung.Editor`, reuseth compiled imports by transitive
+interface key: an edited import invalidateth its dependants only. the session cacheth the last
 root result, an import failure included, until the root text or imports
 change, and each manifest's module roots until its text changeth, so a pinned
 checkout is not verified per request. highlighting needeth no compilation.
@@ -206,8 +229,8 @@ declared names.
   local-index and error rules to callers. checking, induction, normalisation,
   and elaboration share these; constraint solving stayeth in `Universe` and
   semantic neutral spines in `Normalise`.
-- `Elaboration.trial` snapshotteth holes, universes, and resolved references,
-  and a failed trial restoreth all three. no lower layer importeth the source
+- `Unify.trial` snapshotteth holes, universes, and resolved references, and a
+  failed trial restoreth all three. no lower layer importeth the source
   facade.
 - `Source.Error` keepeth failure text apart from its optional span.
   elaboration keepeth the innermost failing expression's span, declaration and
@@ -217,13 +240,14 @@ declared names.
 
 ### checking references and audits
 
-`Elaboration` collecteth resolved references before inference or evaluation
-can erase them. `Source.Elaborate` returneth them with each checked result,
+`Unify` collecteth resolved references before inference or evaluation can
+erase them. `Source.Elaborate` returneth them with each checked result,
 `Source.Declaration` attacheth them to inserted symbols, and `Source.Module`
 and `Source.Cache` preserve them across imports. `Source.Proof.auditProof`
 traverseth them beside checked types and bodies; `verifyProof` applieth the
-axiom policy and, when strict, refuseth `sorry`. `Main` rendereth one
-report for `--name` and the editor, whose `proof` command is always strict.
+axiom policy and, when strict, refuseth `sorry`. `Diagnostic.proofReport`
+rendereth one report for `--name` and the editor, whose `proof` command is
+always strict.
 auditing addeth no kernel typing or conversion rule.
 
 ### concrete tree and recovery
@@ -243,8 +267,8 @@ text is the source's.
 it keepeth complete declarations at unindented heads outside balanced
 delimiters, and a region between them is a broken node whose lines are parsed
 one by one for roles and marks only. unfinished delimiters, strings, and
-comments may limit it. `Elaboration.recover` keepeth inference state so encountered holes
-show goals and contexts after failure, while speculative attempts still
+comments may limit it. `Unify.recover` keepeth inference state so encountered
+holes show goals and contexts after failure, while speculative attempts still
 restore theirs. `Source.Declaration.recoverDeclarations` returneth goals apart
 from its checked result: failed groups and their dependants never enter the
 private recovery environment, and only fully checked imports provide names.
@@ -266,7 +290,7 @@ tail position. a fixpoint's global entry nameth itself through the lazy
 table; a full application of it is a `DFast` effect, so its body unfoldeth only
 when performed. effects reach the host only through `HostIO`: `ioHost` is the
 process host and useth `Tung.Web` for servers, and tests use the simulated
-host in `Test.DependentSupport`. `runYield` validateth its `Inferred`
+host in `Test.Support`. `runYield` validateth its `Inferred`
 judgement with the kernel before erasure; `runMain` and validation share one
 checked-main lookup.
 
@@ -296,8 +320,11 @@ and name, with no shape matching or built-in bizen.
 - successful evaluation cases assert exact results; rejected cases exercise
   the compiler before execution.
 - `Test.Program` compareth generated checked programs with independent host
-  results; dependent groups test kernel and source rules directly.
-- `TUNG_TEST_GROUP` rejecteth unknown names and an empty explicit selection.
+  results; the `core` groups test kernel rules directly and the groups after
+  them source rules.
+- a group is named once, in `test/Main.hs`; its module exporteth only the
+  action that buildeth its tests. `TUNG_TEST_GROUP` rejecteth unknown names
+  and an empty explicit selection.
 - a full run starteth one group process per processor, slowest groups first.
   `TUNG_TEST_JOBS` boundeth that count: the `standard` group peaketh near 6 GB,
   so ci runneth two on ubuntu runners and one on macos runners.
@@ -315,7 +342,9 @@ redundant parentheses, and flatteneth nested products; layout
 followeth only the tokens, their brackets, and the comments between them, so
 sources with one concrete syntax tree share one tidy form: whitespace never
 changeth it and tidying is idempotent. a final check refuseth output whose
-tokens differ from the shortened source's.
+tokens differ from the shortened source's. `Tung.Format.Shorten` rewriteth
+the tokens, `Tung.Format` buildeth a document from the concrete tree, and
+`Tung.Format.Layout` layeth it out.
 
 - a lambda whose binders are its body's last arguments, in order, is
   η-expanded: `{a₁, …, aₙ ^ a₁ f a₂ … aₙ}` becometh `f`, and `{b ^ m tweak b}`
@@ -387,8 +416,8 @@ since a canonical form keepeth no source lines.
 
 ## editor protocol
 
-`tung --editor-session` serveth diagnostics, inferred types, highlighting, and
-tidying over utf-8 json lines, one complete message per line with embedded
+`tung --editor-session` starteth `Tung.Editor`, which serveth diagnostics,
+inferred types, highlighting, and tidying over utf-8 json lines, one complete message per line with embedded
 newlines and control characters escaped. compiler and extension must share the
 protocol version.
 
@@ -460,7 +489,13 @@ the syntax it needeth. textmate supplieth immediate lexical colours.
 brackets; `vscode/server/analysis.ts` joineth roles with those tokens,
 declarations, docs, imports, and local scopes into definitions and
 ownership; a local the parser could not scope, in broken source, keepeth to
-its declaration. the editor resolveth no global itself: a written name is what
+its declaration. `vscode/server/diagnostics.ts` debounceth and versioneth
+checks and publisheth each root's report on the documents it nameth, so an
+error in an import showeth on that import; `vscode/server/main.ts` wireth lsp
+requests to these. a name resolveth to a document's `Definition` or to a
+`PrimitiveDefinition`, which hath no declaration, file, or range; the
+extension compileth under strict typescript, so a feature that needeth a
+declaration narroweth first. the editor resolveth no global itself: a written name is what
 checking resolved it to, else a local binder in scope, else the module's
 visible name; a pattern binder that nameth a visible constructor is that
 constructor, and a field `type.field` is the named slot of its type's
@@ -494,6 +529,15 @@ development resolve `library/` through the same manifest.
 
 each choice was weighed against an alternative.
 
+- the namespaces follow the layers. the parser and source syntax sit under
+  `Tung.Source` beside elaboration, since the source boundary owneth one
+  parse that the tidier and highlighting also read. the elaboration monad is
+  `Source.Unify`, not a core module: it carrieth source spans and failures,
+  and no core module importeth the source layer.
+- the editor session is a library module, `Tung.Editor`, rather than part of
+  the executable: the command line and the session share the cached import
+  path, goal rendering, and the proof report, and `Main` keepeth only
+  command parsing and printing.
 - `Source` is a facade over the acyclic layers `Expression`, `Elaborate`, and
   `Declaration`. `Pattern` lowereth recursion over `Pattern.Common`,
   `Pattern.Index`, and `Pattern.Match`; `Common` holdeth shared binder and
@@ -503,7 +547,7 @@ each choice was weighed against an alternative.
   recognition and instance-pattern comparison are pure and run outside it.
 - the kernel's `Typing` monad keepeth explicit globals, because `Inductive`
   checketh constructors against two staged environments in one run.
-- `splitColumn`, `Parse`, and `Elaboration` stay whole: `splitColumn`'s steps
+- `splitColumn`, `Parse`, and `Unify` stay whole: `splitColumn`'s steps
   share the column, rows, scope, expected type, and recursion; the parser
   shareth one result monad and its roles; metas, unification, and pruning share
   one solver state.

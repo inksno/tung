@@ -1,19 +1,56 @@
 // document model over the compiler's one parse of a buffer, complete or not:
 // its roles, tokens, declarations, docs, imports, and local scopes. it addeth
 // ownership; it never checketh types.
+import type { Position, Range } from "vscode-languageserver/node";
 import { emptySyntax, type SourceRole, type SourceSyntax } from "./checker.ts";
 import {
   bracketPairs,
   lastQualifiedSegment,
   sourceTokens,
   tokenDepths,
-  useNamespace,
   type SourceToken,
 } from "./syntax.ts";
+// a token's lsp role and modifiers.
+type TokenRole = { type: string; modifiers: string[] };
+// a declaration the compiler's tree holdeth. its header endeth at the index
+// of the first token of its body, and its depth is its first token's.
+type Region = {
+  kind: string;
+  startOffset: number;
+  endOffset: number;
+  startIndex: number;
+  headerEnd: number;
+  depth: number;
+  shown: boolean;
+  doc: string | undefined;
+  range: Range;
+};
+// a name a document declareth, seen from `scopeStart` to `scopeEnd`.
+type Definition = {
+  primitive: false;
+  id: string;
+  uri: string;
+  name: string;
+  bareName: string;
+  role: string;
+  token: SourceToken;
+  selectionRange: Range;
+  scopeStart: number;
+  scopeEnd: number;
+  exported: boolean;
+  local: boolean;
+  topLevel: boolean;
+  detail: string;
+  callableConstructor: boolean;
+  documentation: string | undefined;
+  containerName: string | undefined;
+};
+type Instance = { className: string; uri: string; range: Range };
+type DocumentModel = ReturnType<typeof analyzeDocument>;
 const ownedKinds = new Set(["type", "class"]);
 const localRoles = new Set(["parameter", "typeParameter"]);
 // lsp role names stay in the protocol; people read them in tung's terms.
-const roleNames = {
+const roleNames: Record<string, string> = {
   type: "type",
   typeParameter: "type input",
   class: "class",
@@ -21,28 +58,6 @@ const roleNames = {
   method: "member",
 };
 const roleLabel = (role: string) => roleNames[role] ?? role;
-const keywordHelp = {
-  bring:
-    "import a tung file; its last path segment is the default namespace, and an optional alias overrideth it.",
-  show: "publish a declaration, or re-export every visible term, type, and class with a name.",
-  yield: "introduce a block result.",
-  sorry:
-    "stand for an omitted proof or definition of any type; performing it is a runtime error.",
-  axiom:
-    "assume a named constant of a type without a proof; `--check` lists it, `--no-sorry` alloweth it, and `--no-axiom` refuseth it in a proof check.",
-  unbuild:
-    "name the eliminator of a type or class: `drive unbuild name methods target` performeth structural induction.",
-  class: "declare a class and its members.",
-  foreign:
-    "bind an annotated file-level let to the host function named by a preceding string key.",
-  bizen: "provide evidence and member definitions for a class.",
-  match:
-    "match one or more values against exhaustive pattern rows; `;` joineth rows that share a result.",
-  function:
-    "write an annotated function: inputs, a final result type, `^`, and the body.",
-  let: "bind a value, curried function, or type alias.",
-  type: "declare an inductive type and its constructors.",
-};
 const analyzeDocument = (
   text: string,
   uri = "",
@@ -52,46 +67,30 @@ const analyzeDocument = (
   const depths = tokenDepths(tokens);
   const pairs = bracketPairs(tokens);
   const regions = declarationRegions(tokens, depths, syntax);
-  const semantic = compilerSemantic(tokens, syntax.roles, regions, depths);
-  const roles = semantic.semantic;
-  const imports = syntax.imports.flatMap(({ path, alias, start, end }) => {
+  const { roles, callableConstructors } = compilerRoles(
+    tokens,
+    syntax.roles,
+    regions,
+    depths,
+  );
+  const imports = syntax.imports.flatMap(({ path, start, end }) => {
     const first = tokenAt(tokens, start);
     const last = tokenEndingAt(tokens, end);
-    if (!first || !last) return [];
-    return [
-      {
-        path,
-        namespace: useNamespace(path, alias ?? undefined),
-        alias: alias ?? undefined,
-        exported: false,
-        range: tokenRange(first, last),
-      },
-    ];
-  });
-  const definitions = semanticDefinitions(
-    text,
-    tokens,
-    semantic,
-    depths,
-    regions,
-    syntax,
-  );
-  definitions.forEach((definition, id) => {
-    definition.id = `${uri}:${definition.token.offset}:${id}`;
-    definition.uri = uri;
+    return first && last ? [{ path, range: tokenRange(first, last) }] : [];
   });
   return {
     uri,
     text,
     tokens,
-    semantic,
     roles,
-    depths,
     pairs,
     regions,
     imports,
-    instances: collectInstances(tokens, semantic, regions),
-    definitions,
+    instances: collectInstances(uri, tokens, roles, regions),
+    definitions: documentDefinitions(
+      { uri, text, tokens, depths, regions, roles, callableConstructors },
+      syntax,
+    ),
     occurrences: tokens.filter((token) => token.kind === "name"),
     folds: [...pairs.entries()]
       .map(([open, close]) => ({
@@ -106,16 +105,14 @@ const analyzeDocument = (
 // constructor: it is a parameter here, and resolution prefereth a visible
 // constructor of the same name. a direct declaration in a class or bizen
 // body is a method; nested declarations retain their own roles.
-const compilerSemantic = (
-  tokens,
+const compilerRoles = (
+  tokens: SourceToken[],
   sourceRoles: SourceRole[],
-  regions,
-  depths,
+  regions: Region[],
+  depths: number[],
 ) => {
-  const byOffset = new Map<number, SourceToken>(
-    tokens.map((token) => [token.offset, token]),
-  );
-  const semantic = new Map<number, { type: string; modifiers: string[] }>();
+  const byOffset = new Map(tokens.map((token) => [token.offset, token]));
+  const roles = new Map<number, TokenRole>();
   const callableConstructors = new Set<string>();
   for (const [start, , role, modifiers] of sourceRoles) {
     const token = byOffset.get(start);
@@ -150,12 +147,17 @@ const compilerSemantic = (
     ) {
       type = "method";
     }
-    semantic.set(token.index, { type, modifiers: roleModifiers });
+    roles.set(token.index, { type, modifiers: roleModifiers });
   }
-  return { semantic, callableConstructors };
+  return { roles, callableConstructors };
 };
-const collectInstances = (tokens, semantic, regions) => {
-  return regions
+const collectInstances = (
+  uri: string,
+  tokens: SourceToken[],
+  roles: Map<number, TokenRole>,
+  regions: Region[],
+): Instance[] =>
+  regions
     .filter(({ kind }) => kind === "bizen")
     .flatMap((region) => {
       for (
@@ -163,24 +165,27 @@ const collectInstances = (tokens, semantic, regions) => {
         index > region.startIndex;
         index -= 1
       ) {
-        const role = semantic.semantic.get(index);
-        if (role?.type === "class" && tokens[index]?.kind === "name") {
+        if (
+          roles.get(index)?.type === "class" &&
+          tokens[index]?.kind === "name"
+        )
           return [
             {
               className: lastQualifiedSegment(tokens[index].text),
-              uri: "",
+              uri,
               range: tokenRange(tokens[index]),
-              token: tokens[index],
             },
           ];
-        }
       }
       return [];
     });
-};
 // regions supply ownership and source extents for symbols, folding, docs, and
 // local scope. each is a declaration the compiler's tree holdeth.
-const declarationRegions = (tokens, depths, syntax: SourceSyntax) =>
+const declarationRegions = (
+  tokens: SourceToken[],
+  depths: number[],
+  syntax: SourceSyntax,
+): Region[] =>
   syntax.declarations.flatMap(({ kind, start, end, headerEnd, shown, doc }) => {
     const startToken = tokenAt(tokens, start);
     const endToken = tokenEndingAt(tokens, end);
@@ -192,7 +197,6 @@ const declarationRegions = (tokens, depths, syntax: SourceSyntax) =>
         startOffset: start,
         endOffset: end,
         startIndex: startToken.index,
-        endIndex: endToken.index,
         headerEnd: header < 0 ? tokens.length : header,
         depth: depths[startToken.index],
         shown,
@@ -201,18 +205,23 @@ const declarationRegions = (tokens, depths, syntax: SourceSyntax) =>
       },
     ];
   });
-const tokenAt = (tokens, offset) =>
+const tokenAt = (tokens: SourceToken[], offset: number) =>
   tokens.find((token) => token.offset === offset);
-const tokenEndingAt = (tokens, offset) =>
+const tokenEndingAt = (tokens: SourceToken[], offset: number) =>
   tokens.findLast((token) => token.endOffset === offset);
-const semanticDefinitions = (
-  text,
-  tokens,
-  semantic,
-  depths,
-  regions,
+const documentDefinitions = (
+  document: {
+    uri: string;
+    text: string;
+    tokens: SourceToken[];
+    depths: number[];
+    regions: Region[];
+    roles: Map<number, TokenRole>;
+    callableConstructors: Set<string>;
+  },
   syntax: SourceSyntax,
-) => {
+): Definition[] => {
+  const { uri, text, tokens, depths, regions, roles } = document;
   // the parser giveth each local binder the span where it is seen; every
   // other declaration is seen by the whole document.
   const scopes = new Map(
@@ -222,8 +231,8 @@ const semanticDefinitions = (
     ]),
   );
   const documentEnd = tokens.at(-1)?.endOffset || 0;
-  const definitions = [];
-  for (const [index, role] of semantic.semantic) {
+  const definitions: Definition[] = [];
+  for (const [index, role] of roles) {
     if (!role.modifiers.includes("declaration")) continue;
     const token = tokens[index];
     if (
@@ -234,6 +243,7 @@ const semanticDefinitions = (
     ) {
       continue;
     }
+    const bareName = lastQualifiedSegment(token.text);
     const region = smallestRegion(regions, token.offset);
     const owner =
       region && ownedKinds.has(region.kind) && token.index > region.headerEnd
@@ -259,74 +269,95 @@ const semanticDefinitions = (
       (local && region
         ? { start: region.startOffset, end: region.endOffset }
         : { start: 0, end: documentEnd });
-    const parameter = Boolean(binder) && localRoles.has(role.type);
     definitions.push({
+      primitive: false,
+      id: `${uri}:${token.offset}`,
+      uri,
       name: token.text,
-      bareName: lastQualifiedSegment(token.text),
+      bareName,
       role: role.type,
-      modifiers: binder ? ["declaration"] : role.modifiers,
       token,
-      range: tokenRange(token),
       selectionRange: tokenRange(token),
       scopeStart: scope.start,
       scopeEnd: scope.end,
       exported: !binder && exported,
       local,
       topLevel: !binder && depths[token.index] === 0,
-      detail: parameter
-        ? `parameter ${lastQualifiedSegment(token.text)}`
-        : declarationDetail(text, tokens, token, region, role.type),
-      callableConstructor: binder
-        ? undefined
-        : role.type === "enumMember" &&
-          semantic.callableConstructors.has(lastQualifiedSegment(token.text)),
+      detail:
+        binder && localRoles.has(role.type)
+          ? `parameter ${bareName}`
+          : declarationDetail(text, tokens, token, region, role.type),
+      callableConstructor:
+        !binder &&
+        role.type === "enumMember" &&
+        document.callableConstructors.has(bareName),
       documentation: binder ? undefined : region?.doc,
-      containerName: binder ? undefined : ownerName(tokens, semantic, owner),
+      containerName: binder ? undefined : ownerName(tokens, roles, owner),
     });
   }
   return definitions;
 };
-const declarationDetail = (text, tokens, token, region, role) => {
-  if (!region) return `${roleLabel(role)} ${lastQualifiedSegment(token.text)}`;
+const declarationDetail = (
+  text: string,
+  tokens: SourceToken[],
+  token: SourceToken,
+  region: Region | undefined,
+  role: string,
+) => {
+  const fallback = `${roleLabel(role)} ${lastQualifiedSegment(token.text)}`;
+  if (!region) return fallback;
   const end = tokens[region.headerEnd]?.offset ?? token.endOffset;
   const header = text
     .slice(region.startOffset, end)
     .replace(/\s+/g, " ")
     .trim();
-  return header || `${roleLabel(role)} ${lastQualifiedSegment(token.text)}`;
+  return header || fallback;
 };
-const smallestRegion = (regions, offset, kind = undefined) => {
-  return regions
+const smallestRegion = (
+  regions: Region[],
+  offset: number,
+  kind: string | undefined = undefined,
+) =>
+  regions
     .filter(
       (region) =>
         (!kind || region.kind === kind) &&
         region.startOffset <= offset &&
         offset <= region.endOffset,
     )
-    .sort(
-      (a, b) => a.endOffset - a.startOffset - (b.endOffset - b.startOffset),
-    )[0];
-};
-const enclosingOwner = (regions, region, offset) => {
-  return smallestRegion(
+    .sort((a, b) => a.endOffset - a.startOffset - (b.endOffset - b.startOffset))
+    .at(0);
+const enclosingOwner = (
+  regions: Region[],
+  region: Region | undefined,
+  offset: number,
+) =>
+  smallestRegion(
     regions.filter(
       (candidate) => ownedKinds.has(candidate.kind) && candidate !== region,
     ),
     offset,
   );
-};
-const ownerName = (tokens, semantic, owner) => {
+const ownerName = (
+  tokens: SourceToken[],
+  roles: Map<number, TokenRole>,
+  owner: Region | undefined,
+) => {
   if (!owner) return undefined;
   for (let index = owner.startIndex + 1; index <= owner.headerEnd; index += 1) {
-    const role = semantic.semantic.get(index);
+    const role = roles.get(index);
     if (role?.modifiers.includes("declaration") && !localRoles.has(role.type)) {
       return tokens[index].text;
     }
   }
   return undefined;
 };
-const findDefinition = (model, token, offset = token?.offset) => {
-  if (!token || token.kind !== "name") return undefined;
+const findDefinition = (
+  model: { definitions: Definition[] },
+  token: SourceToken | undefined,
+  offset = token?.offset,
+) => {
+  if (!token || token.kind !== "name" || offset === undefined) return undefined;
   const name = lastQualifiedSegment(token.text);
   return model.definitions
     .filter(
@@ -342,23 +373,25 @@ const findDefinition = (model, token, offset = token?.offset) => {
       return (
         Math.abs(offset - a.token.offset) - Math.abs(offset - b.token.offset)
       );
-    })[0];
+    })
+    .at(0);
 };
-const tokenAtPosition = (model, position) => {
-  return model.tokens.find(
+const tokenAtPosition = (
+  model: { tokens: SourceToken[] },
+  position: Position,
+) =>
+  model.tokens.find(
     (token) =>
       token.line === position.line &&
       token.char <= position.character &&
       token.endChar > position.character,
   );
-};
-const tokenRange = (first, last = first) => {
-  return {
-    start: { line: first.line, character: first.char },
-    end: { line: last.endLine, character: last.endChar },
-  };
-};
-const nameRange = (token) => {
+const tokenRange = (first: SourceToken, last = first): Range => ({
+  start: { line: first.line, character: first.char },
+  end: { line: last.endLine, character: last.endChar },
+});
+// a qualified name's range without its namespace.
+const nameRange = (token: SourceToken): Range => {
   const split = token.text.indexOf("~");
   const delta = split < 0 ? 0 : split + 1;
   return {
@@ -369,10 +402,10 @@ const nameRange = (token) => {
 export {
   analyzeDocument,
   findDefinition,
-  keywordHelp,
-  roleLabel,
   nameRange,
+  roleLabel,
   smallestRegion,
   tokenAtPosition,
   tokenRange,
 };
+export type { Definition, DocumentModel, Instance, Region };

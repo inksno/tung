@@ -1,32 +1,22 @@
 -- project loading tests filesystem discovery without involving cli presentation.
 module Test.Project (group) where
 
-import Control.Exception (bracket, evaluate)
+import Control.Exception (evaluate)
 import Data.List (isInfixOf)
 import Data.Map.Strict qualified as Map
-import Data.Time.Clock.POSIX (getPOSIXTime)
-import System.Directory
-  ( canonicalizePath,
-    createDirectory,
-    createDirectoryIfMissing,
-    createFileLink,
-    getTemporaryDirectory,
-    removePathForcibly,
-  )
+import System.Directory (canonicalizePath, createDirectoryIfMissing, createFileLink)
 import System.FilePath (takeDirectory, (</>))
 import System.Mem.StableName (makeStableName)
 import Test.Compile (compileProject, compileProjectWith)
-import Test.DependentSupport (equalitySource)
-import Test.Harness (Group, Test, expect, expectEq)
-import Test.Harness qualified as Harness
+import Test.Harness (Test, expect, expectEq, withDirectory)
+import Test.Support (equalitySource)
 import Tung (ModuleId (..), Project (..), loadEditorProject, loadProjectFile)
-import Tung.Dependent (HostLiteral (..), Level (LParam), SymbolId (..), Term (Global, Literal))
-import Tung.Dependent.Source (DependencyKind (..), ProofDependency (..), auditDependencies, auditProof, cacheKeys, compileImports, loadInterfaces, normaliseSourceExpression, saveInterfaces, sourceEnvironment, sourceExports, sourceGlobal, sourceSnapshot, typeOfName, verifyProof)
+import Tung.Core (HostLiteral (..), Level (LParam), SymbolId (..), Term (Global, Literal))
+import Tung.Source (DependencyKind (..), ProofDependency (..), auditDependencies, auditProof, cacheKeys, compileImports, loadInterfaces, normaliseSourceExpression, saveInterfaces, sourceEnvironment, sourceExports, sourceGlobal, sourceSnapshot, typeOfName, verifyProof)
 
-group :: IO Group
+group :: IO [Test]
 group =
-  Harness.group
-    "project"
+  pure
     [ nestedImports,
       preparedProject,
       localImportPaths,
@@ -175,24 +165,11 @@ withProject :: [(FilePath, String)] -> FilePath -> (Either String Project -> Tes
 withProject files entry assertion =
   withDirectory \root -> writeProject root files >> loadProjectFile [] (root </> entry) >>= assertion
 
-withDirectory :: (FilePath -> Test) -> Test
-withDirectory action = do
-  directory <- temporaryDirectory
-  bracket (pure directory) removePathForcibly action
-
 writeProject :: FilePath -> [(FilePath, String)] -> IO ()
 writeProject root = mapM_ \(path, source) -> do
   let target = root </> path
   createDirectoryIfMissing True (takeDirectory target)
   writeFile target source
-
-temporaryDirectory :: IO FilePath
-temporaryDirectory = do
-  base <- getTemporaryDirectory
-  stamp <- round . (* 1000000) <$> getPOSIXTime
-  let path = base </> ("tung-project-test-" ++ show (stamp :: Integer))
-  createDirectory path
-  pure path
 
 -- interfaces preserve private bodies, class registries, re-exports, and nominal
 -- identities. repeated references share one symbol after checking and loading.

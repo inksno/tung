@@ -1,9 +1,7 @@
 -- shared assertions preserve the boundary between static evaluator rejection and
 -- deliberate runtime failure from an unhandled effect.
 module Test.Harness
-  ( Group,
-    Test,
-    group,
+  ( Test,
     runGroups,
     selectGroups,
     expect,
@@ -26,19 +24,23 @@ module Test.Harness
     checkSource,
     checkFileSource,
     integerSource,
+    withDirectory,
   )
 where
 
 import Control.Concurrent (forkIO, newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
-import Control.Exception (bracket_)
+import Control.Exception (bracket, bracket_)
 import Control.Monad (foldM, forM, when)
 import Data.Functor ((<&>))
 import Data.List (elemIndex, intercalate, isInfixOf, isPrefixOf, sortOn)
 import Data.Map.Strict qualified as Map
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import GHC.Conc (getNumProcessors)
+import System.Directory (createDirectory, getTemporaryDirectory, removePathForcibly)
 import System.Environment qualified as Environment
 import System.Exit (ExitCode (..), exitFailure, exitWith)
+import System.FilePath ((</>))
 import System.IO (hFlush, stdout)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Process (env, proc, readCreateProcessWithExitCode)
@@ -47,17 +49,14 @@ import Test.QuickCheck qualified as QuickCheck
 import Test.QuickCheck.Random qualified as QuickCheck
 import Text.Read (readMaybe)
 import Tung
-import Tung.Dependent.Run (checkMain, ioHost, renderRuntime, requireMain, runMain, runYield)
-import Tung.Dependent.Source (CompileFailure (..), FailureKind (..), SourceProgram, parseProgram, snapshotImportPaths, sourceSnapshot)
+import Tung.Run (checkMain, ioHost, renderRuntime, requireMain, runMain, runYield)
+import Tung.Source (CompileFailure (..), FailureKind (..), SourceProgram, parseProgram, snapshotImportPaths, sourceSnapshot)
 
 type Test = IO (Maybe String)
 
-data Group = Group String [Test]
-
-group :: String -> [Test] -> IO Group
-group name tests = pure (Group name tests)
-
-runGroups :: [(String, IO Group)] -> IO ()
+-- each group is named once, where it is listed; its action buildeth the
+-- tests, loading what they share.
+runGroups :: [(String, IO [Test])] -> IO ()
 runGroups groups = do
   progress <- (== Just "1") <$> Environment.lookupEnv "TUNG_TEST_PROGRESS"
   selected <- Environment.lookupEnv "TUNG_TEST_GROUP"
@@ -95,8 +94,8 @@ runGroups groups = do
       if null failures
         then putStrLn ("ok (" ++ show count ++ " tests)")
         else mapM_ putStrLn (reverse failures) >> exitFailure
-    go progress count failures (action : rest) = do
-      Group name tests <- action
+    go progress count failures ((name, action) : rest) = do
+      tests <- action
       when progress (putStrLn ("running " ++ name) >> hFlush stdout)
       found <- foldM (runTest progress name) failures (zip [1 :: Int ..] tests)
       let nextCount = count + length tests
@@ -111,15 +110,15 @@ runGroups groups = do
 
 -- groups that take longest start first, so parallel runs finish together.
 slowGroups :: [String]
-slowGroups = ["type", "evaluate", "standard", "program", "dependent-module", "dependent-recursion", "dependent-source"]
+slowGroups = ["type", "evaluate", "standard", "program", "module", "recursion", "source"]
 
 -- an explicit selection must name existing groups; a typo cannot pass zero tests.
-selectGroups :: [(String, a)] -> String -> Either String [a]
+selectGroups :: [(String, a)] -> String -> Either String [(String, a)]
 selectGroups groups selection = case unknown of
   _ : _ -> Left ("unknown test groups: " ++ intercalate ", " unknown)
   []
     | null requested -> Left "no test groups selected"
-    | otherwise -> Right [action | (name, action) <- groups, name `elem` requested]
+    | otherwise -> Right [entry | entry@(name, _) <- groups, name `elem` requested]
   where
     requested = words selection
     unknown = filter (`notElem` map fst groups) requested
@@ -244,3 +243,14 @@ expectMessage name passed detail = pure $ if passed then Nothing else Just (name
 -- an integer literal always hath a sign; unsigned digits are a natural.
 integerSource :: (Integral a, Show a) => a -> String
 integerSource value = (if value < 0 then "" else "+") ++ show value
+
+-- a fresh directory, removed after the test.
+withDirectory :: (FilePath -> Test) -> Test
+withDirectory = bracket create removePathForcibly
+  where
+    create = do
+      base <- getTemporaryDirectory
+      stamp <- round . (* 1000000) <$> getPOSIXTime
+      let path = base </> ("tung-test-" ++ show (stamp :: Integer))
+      createDirectory path
+      pure path

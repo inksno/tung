@@ -5,7 +5,7 @@ import { LanguageClient, TransportKind } from "vscode-languageclient/node";
 import { documentSelector } from "./options.ts";
 import type { ProofResult } from "../server/checker.ts";
 let client: LanguageClient;
-export const activate = (context) => {
+export const activate = (context: vscode.ExtensionContext) => {
   const server = context.asAbsolutePath(
     path.join("bundle", "server", "main.js"),
   );

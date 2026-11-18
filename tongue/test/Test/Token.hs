@@ -2,12 +2,11 @@
 module Test.Token (group) where
 
 import Data.Char (chr)
-import Test.Harness (Group, Test, expectEq, expectPrefix)
-import Test.Harness qualified as Harness
+import Test.Harness (Test, expectEq, expectPrefix)
 import Tung
 
-group :: IO Group
-group = Harness.group "token" (map lexCase lexCases ++ map lexError lexErrors ++ scalarCases ++ pieceCases)
+group :: IO [Test]
+group = pure (map lexCase lexCases ++ map lexError lexErrors ++ scalarCases ++ pieceCases)
 
 lexCases :: [(String, String, [Token])]
 lexCases =
@@ -95,7 +94,7 @@ keywordToken = \case
   "bizen" -> TInstance
   "match" -> TMatch
   "sorry" -> TSorry
-  "axiom" -> TOrsend
+  "axiom" -> TAxiom
   "unbuild" -> TInduce
   "function" -> TFunction
   name -> error ("missing keyword token in test: " ++ name)

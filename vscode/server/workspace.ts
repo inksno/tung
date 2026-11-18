@@ -6,6 +6,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { Location, Position, Range } from "vscode-languageserver/node";
 import {
   analyzeDocument,
   findDefinition,
@@ -13,6 +14,8 @@ import {
   roleLabel,
   smallestRegion,
   tokenAtPosition,
+  type Definition,
+  type DocumentModel,
 } from "./analysis.ts";
 import {
   emptyNames,
@@ -20,30 +23,39 @@ import {
   type SourceNames,
   type SourceSyntax,
 } from "./checker.ts";
-import { languageNames } from "./syntax.ts";
-type DocumentModel = ReturnType<typeof analyzeDocument>;
+import { languageNames, type SourceToken } from "./syntax.ts";
+// a primitive type, which no document declareth.
+type PrimitiveDefinition = {
+  primitive: true;
+  name: string;
+  bareName: string;
+  role: "type";
+  detail: string;
+  uri?: undefined;
+  token?: undefined;
+  documentation?: undefined;
+};
+// what a written name refereth to.
+type Referent = Definition | PrimitiveDefinition;
+// a name as a completion would write it, and what it refereth to.
+type Completion = { label: string; definition: Referent };
+type Pending<Result> = { result: Promise<Result>; cancel(): void };
 type DocumentSnapshot = {
   text: string;
   version: number;
-  request?: ReturnType<SyntaxSource["highlight"]>;
+  request?: Pending<SourceSyntax | undefined>;
   syntax?: SourceSyntax;
-  namesRequest?: { result: Promise<SourceNames | undefined>; cancel(): void };
+  namesRequest?: Pending<SourceNames | undefined>;
   names?: SourceNames;
   model?: DocumentModel;
 };
 type SyntaxSource = {
-  highlight(
-    source: string,
-    version: number,
-  ): {
-    result: Promise<SourceSyntax | undefined>;
-    cancel(): void;
-  };
+  highlight(source: string, version: number): Pending<SourceSyntax | undefined>;
   names?(
-    model: { uri: string; text: string },
+    document: { uri: string; text: string },
     texts: [string, string][],
     version: number,
-  ): { result: Promise<SourceNames | undefined>; cancel(): void };
+  ): Pending<SourceNames | undefined>;
 };
 type DocumentLike = { uri: string; version?: number; getText(): string };
 type DocumentStore = {
@@ -83,7 +95,7 @@ class WorkspaceIndex {
   }
   // a changed document maketh stale the names of every document that
   // bringeth it.
-  invalidate(uri) {
+  invalidate(uri: string) {
     this.snapshot(uri, this.documents.get(uri)?.getText());
     const file = realPath(toFilePath(uri));
     for (const entry of this.cache.values()) {
@@ -149,7 +161,7 @@ class WorkspaceIndex {
   }
   // the texts of every module a document reacheth, as its names resolved
   // them; a change to one supersedeth a result that read it.
-  reachedTexts(uri: string) {
+  reachedTexts(uri: string): [string, string | undefined][] {
     return Object.entries(this.namesOf(uri).files).map(([importPath, file]) => [
       importPath,
       this.textOf(this.fileUri(file)),
@@ -212,36 +224,34 @@ class WorkspaceIndex {
     for (const document of this.documents.all()) uris.add(document.uri);
     return [...uris];
   }
-  textOf(uri) {
+  textOf(uri: string) {
     const open = this.documents.get(uri);
     if (open) return open.getText();
     const file = toFilePath(uri);
     if (!file || !fs.existsSync(file)) return undefined;
     return fs.readFileSync(file, "utf8");
   }
-  model(uri) {
+  model(uri: string) {
     const text = this.textOf(uri);
     return text === undefined ? undefined : this.modelForText(uri, text);
   }
-  modelForText(uri, text) {
+  modelForText(uri: string, text: string): DocumentModel {
     const entry = this.snapshot(uri, text)!;
     if (entry.model) return entry.model;
     entry.model = analyzeDocument(text, uri, entry.syntax);
-    entry.model.instances.forEach((instance) => (instance.uri = uri));
     this.invalidateDerived();
     return entry.model;
   }
   models() {
-    if (this.modelsCache) return this.modelsCache;
-    this.modelsCache = this.knownUris()
-      .map((uri) => this.model(uri))
-      .filter(Boolean);
+    this.modelsCache ||= this.knownUris().flatMap(
+      (uri) => this.model(uri) ?? [],
+    );
     return this.modelsCache;
   }
   workspaceFileUris() {
     if (!this.filesDirty) return this.fileUris;
     const roots = new Set([...this.roots, ...this.libraryRoots]);
-    const files = [];
+    const files: string[] = [];
     for (const root of roots) collectFiles(root, files);
     this.fileUris = [...new Set(files.map((file) => pathToFileURL(file).href))];
     this.filesDirty = false;
@@ -249,17 +259,22 @@ class WorkspaceIndex {
   }
   // a global as the compiler nameth it: its module is `<root>` for the
   // document itself, `<primitive>`, or a bring path the document reacheth.
-  definitionOf(model, module: string, name: string) {
+  definitionOf(
+    model: DocumentModel,
+    module: string,
+    name: string,
+  ): Referent | undefined {
     const bare = name.startsWith("unbuild ") ? name.slice(8) : name;
     if (module === "<primitive>") {
       return languageNames.primitiveTypes.includes(bare)
-        ? primitive(bare, "type")
+        ? primitive(bare)
         : undefined;
     }
     const target =
       module === "<root>" ? model : this.importModel(model, module);
-    const global = (written) =>
-      target?.definitions.find(
+    if (!target) return undefined;
+    const global = (written: string) =>
+      target.definitions.find(
         (definition) => !definition.local && definition.bareName === written,
       );
     // a field `type.field` is the named slot of its type's constructor.
@@ -280,13 +295,18 @@ class WorkspaceIndex {
     }
     return global(bare);
   }
-  resolveAt(uri, position) {
+  resolveAt(
+    uri: string,
+    position: Position,
+  ): { model?: DocumentModel; token?: SourceToken; definition?: Referent } {
     const model = this.model(uri);
     const token = model && tokenAtPosition(model, position);
-    if (!model || !token || token.kind !== "name") {
-      return { model, token, definition: undefined };
-    }
-    const found = (definition) => ({ model, token, definition });
+    if (!model || !token || token.kind !== "name") return { model, token };
+    const found = (definition: Referent | undefined) => ({
+      model,
+      token,
+      definition,
+    });
     const names = this.namesOf(uri);
     const resolved = names.resolved.find(([start]) => start === token.offset);
     if (resolved)
@@ -304,10 +324,14 @@ class WorkspaceIndex {
     return found(visible && this.definitionOf(model, visible[1], visible[2]));
   }
   // every occurrence that resolveth to the definition, in one document or all.
-  references(definition, includeDeclaration = true, only?: string) {
+  references(
+    definition: Referent | undefined,
+    includeDeclaration = true,
+    only?: string,
+  ): Location[] {
     if (!definition) return [];
     const key = definitionKey(definition);
-    const locations = [];
+    const locations: Location[] = [];
     for (const model of this.models()) {
       if (only && model.uri !== only) continue;
       for (const token of model.occurrences) {
@@ -320,20 +344,21 @@ class WorkspaceIndex {
         }
       }
     }
-    // the declaration's own name resolveth to it too; the caller decideth.
-    const declared = ({ uri, range }) =>
-      uri === definition.uri && sameRange(range, definition.selectionRange);
+    // a primitive hath no declaration. a declaration's own name resolveth to
+    // it too; the caller decideth.
+    if (definition.primitive) return locations;
+    const declaration: Location = {
+      uri: definition.uri,
+      range: definition.selectionRange,
+    };
+    const declared = ({ uri, range }: Location) =>
+      uri === declaration.uri && sameRange(range, declaration.range);
     if (!includeDeclaration)
       return locations.filter((location) => !declared(location));
-    if (!locations.some(declared)) {
-      locations.unshift({
-        uri: definition.uri,
-        range: definition.selectionRange,
-      });
-    }
+    if (!locations.some(declared)) locations.unshift(declaration);
     return locations;
   }
-  implementations(definition) {
+  implementations(definition: Referent | undefined): Location[] {
     if (!definition || definition.role !== "class") return [];
     return this.models().flatMap((model) =>
       model.instances
@@ -342,38 +367,37 @@ class WorkspaceIndex {
     );
   }
   // the module a bring path of a document reacheth, as its names resolved it.
-  importModel(model, importPath) {
+  importModel(model: DocumentModel | undefined, importPath: string) {
     const file = model && this.namesOf(model.uri).files[importPath];
     return file ? this.model(this.fileUri(file)) : undefined;
   }
-  completions(uri, position) {
+  completions(uri: string, position: Position): Completion[] {
     const model = this.model(uri);
     if (!model) return [];
     const token = tokenAtPosition(model, position);
     const offset = token?.offset ?? model.text.length;
-    const local = model.definitions.filter(
-      ({ scopeStart, scopeEnd }) => scopeStart <= offset && offset <= scopeEnd,
-    );
+    const local = model.definitions
+      .filter(
+        ({ scopeStart, scopeEnd }) =>
+          scopeStart <= offset && offset <= scopeEnd,
+      )
+      .map((definition) => ({ label: definition.bareName, definition }));
     const visible = this.namesOf(uri).visible.flatMap(
       ([written, module, name]) => {
         const definition = this.definitionOf(model, module, name);
-        return definition ? [{ ...definition, completionName: written }] : [];
+        return definition ? [{ label: written, definition }] : [];
       },
     );
-    return uniqueByKey(
-      [...local, ...visible],
-      (definition) => definition.completionName || definition.bareName,
-    );
+    return uniqueByKey([...local, ...visible], ({ label }) => label);
   }
-  modulePaths(uri) {
+  modulePaths(uri: string) {
     const current = toFilePath(uri);
     const result = new Set<string>();
     for (const model of this.models()) {
       const file = toFilePath(model.uri);
       if (!file || file === current) continue;
-      if (current) {
-        result.add(normalPath(path.relative(path.dirname(current), file)));
-      }
+      const relative = current && path.relative(path.dirname(current), file);
+      if (relative) result.add(normalPath(relative));
       for (const root of this.libraryRoots) {
         const relative = path.relative(root, file);
         if (
@@ -392,11 +416,14 @@ class WorkspaceIndex {
       )
       .sort();
   }
-  primitiveCompletions() {
-    return languageNames.primitiveTypes.map((name) => primitive(name, "type"));
+  primitiveCompletions(): Completion[] {
+    return languageNames.primitiveTypes.map((name) => ({
+      label: name,
+      definition: primitive(name),
+    }));
   }
 }
-const collectFiles = (root, result) => {
+const collectFiles = (root: string, result: string[]) => {
   if (!root || !fs.existsSync(root)) return;
   let entries;
   try {
@@ -411,24 +438,19 @@ const collectFiles = (root, result) => {
     if (entry.isFile() && entry.name.endsWith(".tung")) result.push(file);
   }
 };
-const primitive = (name, role) => {
-  return {
-    name,
-    bareName: name,
-    completionName: name,
-    role,
-    modifiers: ["defaultLibrary"],
-    detail: `built-in ${roleLabel(role)} ${name}`,
-    primitive: true,
-  };
-};
-const definitionKey = (definition) => {
-  return (
-    definition.id ||
-    `${definition.uri}:${definition.token?.offset}:${definition.bareName}`
-  );
-};
-const uniqueByKey = (items, keyOf = (item) => item) => {
+const primitive = (name: string): PrimitiveDefinition => ({
+  primitive: true,
+  name,
+  bareName: name,
+  role: "type",
+  detail: `built-in ${roleLabel("type")} ${name}`,
+});
+const definitionKey = (definition: Referent) =>
+  definition.primitive ? `<primitive>:${definition.bareName}` : definition.id;
+const uniqueByKey = <Item>(
+  items: Item[],
+  keyOf: (item: Item) => unknown = (item) => item,
+) => {
   const seen = new Set();
   return items.filter((item) => {
     const key = keyOf(item);
@@ -437,7 +459,7 @@ const uniqueByKey = (items, keyOf = (item) => item) => {
     return true;
   });
 };
-const sameRange = (left, right) => {
+const sameRange = (left: Range, right: Range) => {
   return (
     left.start.line === right.start.line &&
     left.start.character === right.start.character &&
@@ -445,22 +467,21 @@ const sameRange = (left, right) => {
     left.end.character === right.end.character
   );
 };
-const normalPath = (file) => {
-  return file ? path.normalize(file).split(path.sep).join("/") : undefined;
-};
+const normalPath = (file: string) =>
+  path.normalize(file).split(path.sep).join("/");
 const forgetNames = (entry: DocumentSnapshot) => {
   entry.namesRequest?.cancel();
   entry.namesRequest = undefined;
   entry.names = undefined;
 };
-const realPath = (file) => {
+const realPath = (file: string | undefined) => {
   try {
     return file ? fs.realpathSync(file) : undefined;
   } catch {
     return undefined;
   }
 };
-const toFilePath = (uri) => {
+const toFilePath = (uri: string | null | undefined) => {
   try {
     return uri?.startsWith("file:") ? fileURLToPath(uri) : undefined;
   } catch {
@@ -468,3 +489,4 @@ const toFilePath = (uri) => {
   }
 };
 export { toFilePath, uniqueByKey, WorkspaceIndex };
+export type { Completion, PrimitiveDefinition, Referent };

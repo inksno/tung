@@ -13,8 +13,8 @@ where
 import Data.Char (isSpace)
 import Data.List (dropWhileEnd, intercalate, isPrefixOf)
 import Data.Map.Strict qualified as Map
-import Tung.Concrete (Leaf (..), NodeKind (..), Tree (..), treeSpan)
-import Tung.Dependent.Source.Parse (SourceRole (..), sourceSyntax)
+import Tung.Concrete (Leaf (..), NodeKind (..), Tree (..), treePieces, treeSpan)
+import Tung.Source.Parse (SourceRole (..), sourceSyntax)
 import Tung.Token
 
 data SourceSyntax = SourceSyntax
@@ -53,7 +53,7 @@ sourceSyntaxSummary :: String -> SourceSyntax
 sourceSyntaxSummary source =
   SourceSyntax
     { syntaxRoles = [(start, end, role, modifiers) | (start, (end, role, modifiers)) <- Map.toAscList (Map.fromList [(spanStart span, (spanEnd span, role, modifiers)) | SourceRole span role modifiers <- roles])],
-      syntaxTokens = [(spanStart pieceSpan, spanEnd pieceSpan, kind token) | Piece {pieceSpan, pieceKind = Lexeme token} <- leaves tree],
+      syntaxTokens = [(spanStart pieceSpan, spanEnd pieceSpan, kind token) | Piece {pieceSpan, pieceKind = Lexeme token} <- treePieces tree],
       syntaxDeclarations = [summary | TreeNode DeclarationNode children <- nodes, Just summary <- [declaration children]],
       syntaxImports = [summary | TreeNode DeclarationNode children <- nodes, Just summary <- [bring children]],
       syntaxScopes = [(spanStart binder, spanEnd binder, spanStart scope, spanEnd scope) | (binder, scope) <- scopes]
@@ -69,7 +69,7 @@ sourceSyntaxSummary source =
       TNatural _ -> "number"
       TInteger _ -> "number"
       TFloat _ -> "number"
-      token | token `elem` [TLet, TFix, TExport, TImport, TType, TYield, TForeign, TClass, TInstance, TMatch, TSorry, TOrsend, TInduce, TFunction] -> "keyword"
+      token | token `elem` [TLet, TFix, TExport, TImport, TType, TYield, TForeign, TClass, TInstance, TMatch, TSorry, TAxiom, TInduce, TFunction] -> "keyword"
       _ -> "punctuation"
 
 universe :: Tree -> [Tree]
@@ -78,19 +78,13 @@ universe tree =
     TreeNode _ children -> concatMap universe children
     TreeLeaf _ -> []
 
-leaves :: Tree -> [Piece]
-leaves = \case
-  TreeLeaf Leaf {leafPiece = Just piece} -> [piece]
-  TreeLeaf _ -> []
-  TreeNode _ children -> concatMap leaves children
-
 tokenOf :: Piece -> Maybe Token
 tokenOf Piece {pieceKind = Lexeme token} = Just token
 tokenOf _ = Nothing
 
 declaration :: [Tree] -> Maybe DeclarationSummary
 declaration children = do
-  let pieces = concatMap leaves children
+  let pieces = concatMap treePieces children
   (shown, keyword) <- case pieces of
     first : second : _ | tokenOf first == Just TExport -> Just (True, second)
     first : _ -> Just (False, first)
@@ -102,7 +96,7 @@ declaration children = do
         | otherwise = case dropWhile (not . isSign) children of
             _ : next : _ | Just (SourceSpan start _) <- treeSpan next -> start
             _ -> end
-  if token `elem` [TLet, TFix, TType, TClass, TInstance, TOrsend]
+  if token `elem` [TLet, TFix, TType, TClass, TInstance, TAxiom]
     then Just (DeclarationSummary (pieceText keyword) (spanStart (pieceSpan keyword)) end headerEnd shown (documentation children))
     else Nothing
   where
@@ -140,7 +134,7 @@ documentation children = case children of
     trim = dropWhile isSpace . dropWhileEnd isSpace
 
 bring :: [Tree] -> Maybe ImportSummary
-bring children = case concatMap leaves children of
+bring children = case concatMap treePieces children of
   keyword : rest | tokenOf keyword == Just TImport -> do
     let (path, alias) = segments rest
     first : _ <- Just path

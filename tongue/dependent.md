@@ -9,7 +9,7 @@ than restating it. [`todo.md`](../todo.md) tracketh remaining work.
 
 ## implemented core
 
-`Tung.Dependent` provideth a checked dependent lambda calculus, following
+`Tung.Core` provideth a checked dependent lambda calculus, following
 [lambda pi](https://www.andres-loeh.de/LambdaPi/) for products and the
 [lean inductive rules](https://lean-lang.org/doc/reference/latest/The-Type-System/Inductive-Types/)
 for generated eliminators. its api is `infer`, `check`, `define`,
@@ -751,7 +751,7 @@ normalisation and execution share one catalogue, `hostBindings` in
 
 `let name:type ≔ 'key' foreign`, at top level, bindeth one trusted host
 constant. the kernel checketh the required annotation, then
-`Tung.Dependent.Host` matcheth its normalised type against the catalogued
+`Tung.Core.Host` matcheth its normalised type against the catalogued
 signature: implicit type inputs, explicit inputs the result doth not depend
 on, and the result; universe levels are not compared. the program chooseth
 every name.

@@ -6,13 +6,13 @@ import Data.List (stripPrefix)
 import Data.Map.Strict qualified as Map
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Environment qualified as Environment
-import Test.Harness (Group, Test, evalOkWith, evalTypeErrWith, integerSource)
+import Test.Harness (Test, evalOkWith, evalTypeErrWith, integerSource)
 import Test.Harness qualified as Harness
 import Text.Read (readMaybe)
 
-group :: IO Group
+group :: IO [Test]
 group =
-  Harness.group "evaluate" (map (evalCase Map.empty) deterministic ++ map (typeErrorCase Map.empty) typeErrors ++ importedCases Map.empty)
+  pure (map (evalCase Map.empty) deterministic ++ map (typeErrorCase Map.empty) typeErrors ++ importedCases Map.empty)
 
 deterministic :: [(String, String, String)]
 deterministic =

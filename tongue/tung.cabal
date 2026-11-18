@@ -29,37 +29,22 @@ common warnings
 
 library
   import: warnings
-  exposed-modules: Tung, Tung.Dependent, Tung.Dependent.Run, Tung.Dependent.Source
+  exposed-modules: Tung, Tung.Core, Tung.Run, Tung.Source
   other-modules:
       Tung.Concrete
-    , Tung.Dependent.Check
-    , Tung.Dependent.Elaboration
-    , Tung.Dependent.Host
-    , Tung.Dependent.Inductive
-    , Tung.Dependent.Literal
-    , Tung.Dependent.Normalise
-    , Tung.Dependent.Render
-    , Tung.Dependent.Source.Declaration
-    , Tung.Dependent.Source.Cache
-    , Tung.Dependent.Source.Elaborate
-    , Tung.Dependent.Source.Environment
-    , Tung.Dependent.Source.Error
-    , Tung.Dependent.Source.Expression
-    , Tung.Dependent.Source.Instance
-    , Tung.Dependent.Source.Module
-    , Tung.Dependent.Source.Parse
-    , Tung.Dependent.Source.Proof
-    , Tung.Dependent.Source.Render
-    , Tung.Dependent.Source.Pattern
-    , Tung.Dependent.Source.Pattern.Common
-    , Tung.Dependent.Source.Pattern.Index
-    , Tung.Dependent.Source.Pattern.Match
-    , Tung.Dependent.Source.Scope
-    , Tung.Dependent.Source.Syntax
-    , Tung.Dependent.Syntax
-    , Tung.Dependent.Universe
+    , Tung.Core.Check
+    , Tung.Core.Host
+    , Tung.Core.Inductive
+    , Tung.Core.Literal
+    , Tung.Core.Normalise
+    , Tung.Core.Render
+    , Tung.Core.Syntax
+    , Tung.Core.Universe
     , Tung.Diagnostic
+    , Tung.Editor
     , Tung.Format
+    , Tung.Format.Layout
+    , Tung.Format.Shorten
     , Tung.Highlight
     , Tung.Identity
     , Tung.Library
@@ -67,6 +52,24 @@ library
     , Tung.Name
     , Tung.Primitive
     , Tung.Project
+    , Tung.Source.Cache
+    , Tung.Source.Declaration
+    , Tung.Source.Elaborate
+    , Tung.Source.Environment
+    , Tung.Source.Error
+    , Tung.Source.Expression
+    , Tung.Source.Instance
+    , Tung.Source.Module
+    , Tung.Source.Parse
+    , Tung.Source.Pattern
+    , Tung.Source.Pattern.Common
+    , Tung.Source.Pattern.Index
+    , Tung.Source.Pattern.Match
+    , Tung.Source.Proof
+    , Tung.Source.Render
+    , Tung.Source.Scope
+    , Tung.Source.Syntax
+    , Tung.Source.Unify
     , Tung.Token
     , Tung.Web
   hs-source-dirs: src
@@ -97,9 +100,7 @@ executable tung
   hs-source-dirs: app
   default-language: Haskell2010
   build-depends:
-      aeson >=2 && <3
-    , base >=4.20 && <5
-    , bytestring
+      base >=4.20 && <5
     , containers
     , directory
     , filepath
@@ -128,33 +129,34 @@ test-suite tung-test
   ghc-options: -threaded
   default-extensions: MultilineStrings
   other-modules:
-      Test.Program
-    , Test.Dependent
-    , Test.DependentInductive
-    , Test.DependentInductiveSource
-    , Test.DependentEffect
-    , Test.DependentClass
-    , Test.DependentHost
-    , Test.DependentList
-    , Test.DependentLiteral
-    , Test.DependentMatch
-    , Test.DependentModule
-    , Test.DependentField
-    , Test.DependentRecursion
-    , Test.DependentSource
+      Test.Class
     , Test.Compile
-    , Test.DependentSupport
+    , Test.Core
+    , Test.CoreInductive
     , Test.Diagnostic
+    , Test.Effect
     , Test.Evaluate
+    , Test.Field
     , Test.Format
     , Test.Harness
     , Test.HarnessTests
+    , Test.Host
+    , Test.Inductive
     , Test.Integration
+    , Test.Layering
     , Test.Library
-    , Test.Standard
+    , Test.List
+    , Test.Literal
+    , Test.Match
+    , Test.Module
     , Test.Name
     , Test.Parse
+    , Test.Program
     , Test.Project
+    , Test.Recursion
+    , Test.Source
+    , Test.Standard
+    , Test.Support
     , Test.Token
     , Test.Type
     , Test.Validate

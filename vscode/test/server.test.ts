@@ -8,9 +8,21 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import {
   createMessageConnection,
+  type MessageConnection,
   StreamMessageReader,
   StreamMessageWriter,
 } from "vscode-jsonrpc/node";
+import type {
+  CompletionItem,
+  Diagnostic,
+  DocumentLink,
+  DocumentSymbol,
+  FoldingRange,
+  Location,
+  Position,
+  PublishDiagnosticsParams,
+  WorkspaceSymbol,
+} from "vscode-languageserver/node";
 // lsp results are deliberately heterogeneous in this integration harness.
 // deno-lint-ignore no-explicit-any
 type LspTestResult = any;
@@ -44,7 +56,7 @@ test("server implementeth the editor workflow over stdio", async (context) => {
     "workspace/semanticTokens/refresh",
   );
   connection.listen();
-  const request = (method, params) =>
+  const request = (method: string, params: object) =>
     connection.sendRequest<LspTestResult>(method, params);
   const initialized = await connection.sendRequest<LspTestResult>(
     "initialize",
@@ -125,7 +137,10 @@ test("server implementeth the editor workflow over stdio", async (context) => {
     ],
   });
   await changedHighlight;
-  assert.match((await staleDiskGuard).diagnostics[0].message, /^type error:/);
+  assert.match(
+    messageText((await staleDiskGuard).diagnostics[0]),
+    /^type error:/,
+  );
   const restoredImport = nextDiagnostics(
     connection,
     mainUri,
@@ -218,15 +233,60 @@ test("server implementeth the editor workflow over stdio", async (context) => {
     textDocument: { uri: mainUri },
     position: { line: 0, character: 10 },
   });
-  assert(moduleCompletion.some(({ label }) => label === "dep.tung"));
+  assert(
+    moduleCompletion.some(({ label }: CompletionItem) => label === "dep.tung"),
+  );
+  // an unfinished bring hath no parsed path; its keyword still offereth paths.
+  const draftUri = pathToFileURL(path.join(root, "draft.tung")).href;
+  connection.sendNotification("textDocument/didOpen", {
+    textDocument: {
+      uri: draftUri,
+      languageId: "tung",
+      version: 1,
+      text: "bring ",
+    },
+  });
+  const draftCompletion = await request("textDocument/completion", {
+    textDocument: { uri: draftUri },
+    position: { line: 0, character: "bring ".length },
+  });
+  assert(
+    draftCompletion.some(({ label }: CompletionItem) => label === "dep.tung"),
+  );
+  connection.sendNotification("textDocument/didClose", {
+    textDocument: { uri: draftUri },
+  });
+  // a crlf line break is two utf-16 units before the completed prefix.
+  const crlfUri = pathToFileURL(path.join(root, "crlf.tung")).href;
+  const crlfLast = "let gamma ≔ alp";
+  connection.sendNotification("textDocument/didOpen", {
+    textDocument: {
+      uri: crlfUri,
+      languageId: "tung",
+      version: 1,
+      text: `let alpha ≔ +1\r\nlet also ≔ +2\r\n${crlfLast}`,
+    },
+  });
+  const crlfLabels = (
+    await request("textDocument/completion", {
+      textDocument: { uri: crlfUri },
+      position: { line: 2, character: crlfLast.length },
+    })
+  ).map(({ label }: CompletionItem) => label);
+  assert(crlfLabels.includes("alpha"));
+  assert(!crlfLabels.includes("also"));
+  connection.sendNotification("textDocument/didClose", {
+    textDocument: { uri: crlfUri },
+  });
   const answerPosition = positionOf(mainText, "answer");
   const identityPosition = positionOf(mainText, "identity");
   const completion = await request("textDocument/completion", {
     textDocument: { uri: mainUri },
     position: answerPosition,
   });
-  assert(completion.some(({ label }) => label === "answer"));
-  assert(completion.some(({ label }) => label === "dep~answer"));
+  const labels = completion.map(({ label }: CompletionItem) => label);
+  assert(labels.includes("answer"));
+  assert(labels.includes("dep~answer"));
   const definition = await request("textDocument/definition", {
     textDocument: { uri: mainUri },
     position: answerPosition,
@@ -244,7 +304,7 @@ test("server implementeth the editor workflow over stdio", async (context) => {
     context: { includeDeclaration: true },
   });
   assert.deepEqual(
-    new Set(references.map(({ uri }) => uri)),
+    new Set(references.map(({ uri }: Location) => uri)),
     new Set([depUri, mainUri]),
   );
   const rename = await request("textDocument/rename", {
@@ -269,26 +329,48 @@ test("server implementeth the editor workflow over stdio", async (context) => {
     position: positionOf(mainText, "ℤ"),
   });
   assert.equal(primitiveRename, null);
+  // a built-in type hath no declaration: its references are where it is written.
+  const primitiveReferences = await request("textDocument/references", {
+    textDocument: { uri: mainUri },
+    position: positionOf(mainText, "ℤ"),
+    context: { includeDeclaration: true },
+  });
+  assert.deepEqual(
+    new Set(primitiveReferences.map(({ uri }: Location) => uri)),
+    new Set([depUri, mainUri]),
+  );
+  assert(primitiveReferences.every(({ range }: Location) => range));
+  const primitiveHover = await request("textDocument/hover", {
+    textDocument: { uri: mainUri },
+    position: positionOf(mainText, "ℤ"),
+  });
+  assert.match(primitiveHover.contents.value, /built-in · type/);
   const symbols = await request("textDocument/documentSymbol", {
     textDocument: { uri: mainUri },
   });
-  assert(symbols.some(({ name }) => name === "value"));
-  assert(symbols.some(({ name }) => name === "_box"));
+  const symbolNames = symbols.map(({ name }: DocumentSymbol) => name);
+  assert(symbolNames.includes("value"));
+  assert(symbolNames.includes("_box"));
   const workspaceSymbols = await request("workspace/symbol", {
     query: "answer",
   });
-  assert(workspaceSymbols.some(({ location }) => location.uri === depUri));
+  assert(
+    workspaceSymbols.some(
+      ({ location }: WorkspaceSymbol) =>
+        "range" in location && location.uri === depUri,
+    ),
+  );
   const convertPosition = positionOf(mainText, "convert");
   const implementations = await request("textDocument/implementation", {
     textDocument: { uri: mainUri },
     position: convertPosition,
   });
-  assert(implementations.some(({ uri }) => uri === mainUri));
+  assert(implementations.some(({ uri }: Location) => uri === mainUri));
   const links = await request("textDocument/documentLink", {
     textDocument: { uri: mainUri },
   });
   assert.deepEqual(
-    links.map(({ target }) => target),
+    links.map(({ target }: DocumentLink) => target),
     [depUri],
   );
   const folds = await request("textDocument/foldingRange", {
@@ -296,7 +378,8 @@ test("server implementeth the editor workflow over stdio", async (context) => {
   });
   assert(
     folds.some(
-      ({ startLine }) => startLine === positionOf(mainText, "show").line,
+      ({ startLine }: FoldingRange) =>
+        startLine === positionOf(mainText, "show").line,
     ),
   );
   const selections = await request("textDocument/selectionRange", {
@@ -342,7 +425,7 @@ test("server implementeth the editor workflow over stdio", async (context) => {
     changes: [{ uri: depUri, type: 2 }],
   });
   const importedResult = await importedDiagnostics;
-  assert.match(importedResult.diagnostics[0].message, /^type error:/);
+  assert.match(messageText(importedResult.diagnostics[0]), /^type error:/);
   assert.deepEqual(
     importedResult.diagnostics[0].range.start,
     positionOf(importedSource, "'wrong'"),
@@ -371,7 +454,7 @@ test("server implementeth the editor workflow over stdio", async (context) => {
     contentChanges: [{ text: badText }],
   });
   const badResult = await badDiagnostics;
-  assert.match(badResult.diagnostics[0].message, /^type error:/);
+  assert.match(messageText(badResult.diagnostics[0]), /^type error:/);
   assert.deepEqual(
     badResult.diagnostics[0].range.start,
     positionOf(badText, "answer"),
@@ -430,7 +513,7 @@ test("server implementeth the editor workflow over stdio", async (context) => {
     });
     const [error, recoveredGoal] = (await recoveredDiagnostics).diagnostics;
     assert.equal(error.severity, 1);
-    assert.match(error.message, new RegExp(`^${kind} error:`));
+    assert.match(messageText(error), new RegExp(`^${kind} error:`));
     assert.equal(recoveredGoal.severity, 3);
     assert.equal(recoveredGoal.message, goal.message);
     assert.deepEqual(recoveredGoal.range.start, positionOf(text, "sorry"));
@@ -449,7 +532,8 @@ test("server implementeth the editor workflow over stdio", async (context) => {
   const importErrorWithGoal = nextDiagnostics(
     connection,
     depUri,
-    ({ diagnostics }) => diagnostics.some(({ severity }) => severity === 1),
+    ({ diagnostics }) =>
+      diagnostics.some(({ severity }: Diagnostic) => severity === 1),
   );
   const rootGoalWithImportError = nextDiagnostics(
     connection,
@@ -681,40 +765,46 @@ test("server resolveth a nested project's git-pinned library", async (context) =
   await once(server, "exit");
   connection.dispose();
 });
+type DiagnosticWaiter = (params: PublishDiagnosticsParams) => void;
 const diagnosticWaiters = new WeakMap<
-  object,
-  Set<(params: LspTestResult) => void>
+  MessageConnection,
+  Set<DiagnosticWaiter>
 >();
 const nextDiagnostics = (
-  connection,
-  uri,
-  accept: (params: LspTestResult) => boolean = () => true,
+  connection: MessageConnection,
+  uri: string,
+  accept: (params: PublishDiagnosticsParams) => boolean = () => true,
 ) => {
   let waiters = diagnosticWaiters.get(connection);
   if (!waiters) {
-    waiters = new Set();
-    diagnosticWaiters.set(connection, waiters);
-    connection.onNotification("textDocument/publishDiagnostics", (params) => {
-      for (const receive of waiters) receive(params);
-    });
+    const added = new Set<DiagnosticWaiter>();
+    diagnosticWaiters.set(connection, added);
+    connection.onNotification(
+      "textDocument/publishDiagnostics",
+      (params: PublishDiagnosticsParams) => {
+        for (const receive of added) receive(params);
+      },
+    );
+    waiters = added;
   }
-  return new Promise<LspTestResult>((resolve, reject) => {
+  const present = waiters;
+  return new Promise<PublishDiagnosticsParams>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      waiters.delete(receive);
+      present.delete(receive);
       reject(new Error(`timed out waiting for diagnostics for ${uri}`));
     }, 30000);
-    const receive = (params) => {
+    const receive = (params: PublishDiagnosticsParams) => {
       if (params.uri !== uri || !accept(params)) return;
       clearTimeout(timeout);
-      waiters.delete(receive);
+      present.delete(receive);
       resolve(params);
     };
-    waiters.add(receive);
+    present.add(receive);
   });
 };
-const requestQueue = (connection, method) => {
-  const queued = [];
-  const waiting = [];
+const requestQueue = (connection: MessageConnection, method: string) => {
+  const queued: true[] = [];
+  const waiting: (() => void)[] = [];
   connection.onRequest(method, () => {
     const resolve = waiting.shift();
     if (resolve) resolve();
@@ -740,17 +830,20 @@ const requestQueue = (connection, method) => {
     },
   };
 };
-const positionOf = (text, needle, occurrence = 0) => {
+// the server publisheth plain messages.
+const messageText = ({ message }: Diagnostic) =>
+  typeof message === "string" ? message : message.value;
+const positionOf = (text: string, needle: string, occurrence = 0) => {
   let offset = -1;
   for (let found = 0; found <= occurrence; found += 1) {
     offset = text.indexOf(needle, offset + 1);
   }
   assert(offset >= 0, needle);
   const before = text.slice(0, offset).split("\n");
-  return { line: before.length - 1, character: before.at(-1).length };
+  return { line: before.length - 1, character: before.at(-1)?.length ?? 0 };
 };
-const decodedSemanticTokens = (data, tokenTypes) => {
-  const result = new Map();
+const decodedSemanticTokens = (data: number[], tokenTypes: string[]) => {
+  const result = new Map<string, string>();
   let line = 0;
   let character = 0;
   for (let index = 0; index < data.length; index += 5) {
@@ -761,6 +854,6 @@ const decodedSemanticTokens = (data, tokenTypes) => {
   }
   return result;
 };
-const positionKey = ({ line, character }) => {
+const positionKey = ({ line, character }: Position) => {
   return `${line}:${character}`;
 };

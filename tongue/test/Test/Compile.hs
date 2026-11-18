@@ -25,8 +25,8 @@ import System.Environment (lookupEnv)
 import System.FilePath (takeBaseName, takeExtension, (</>))
 import System.IO.Unsafe (unsafePerformIO)
 import Tung (readLibraryImports)
-import Tung.Dependent (Inferred, ModuleId)
-import Tung.Dependent.Source (CompileFailure (..), SourceProgram, SourceSnapshot, cacheKeys, compileImports, compileSnapshot, loadInterfaces, saveInterfaces, sourceSnapshot)
+import Tung.Core (Inferred, ModuleId)
+import Tung.Source (CompileFailure (..), SourceProgram, SourceSnapshot, cacheKeys, compileImports, compileSnapshot, loadInterfaces, saveInterfaces, sourceSnapshot)
 
 compileSource :: ModuleId -> String -> Either String SourceProgram
 compileSource owner source = compileProject owner source Map.empty

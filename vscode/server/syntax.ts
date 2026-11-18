@@ -46,8 +46,13 @@ type SourceToken = ReturnType<typeof sourceTokens>[number];
 
 // one scan findeth depths and matching delimiters; an unmatched close
 // neither pairth nor goeth below depth zero.
-const structureCache = new WeakMap();
-const tokenStructure = (tokens: SourceToken[]) => {
+type TokenStructure = {
+  depths: number[];
+  forward: Map<number, number>;
+  backward: Map<number, number>;
+};
+const structureCache = new WeakMap<SourceToken[], TokenStructure>();
+const tokenStructure = (tokens: SourceToken[]): TokenStructure => {
   const cached = structureCache.get(tokens);
   if (cached) return cached;
   const depths: number[] = [];
@@ -84,16 +89,11 @@ const findMatching = (tokens: SourceToken[], openIndex: number) =>
 const findOpening = (tokens: SourceToken[], closeIndex: number) =>
   tokenStructure(tokens).backward.get(closeIndex) ?? -1;
 
-const lastQualifiedSegment = (name) => {
+const lastQualifiedSegment = (name: string) => {
   const separator = name.lastIndexOf("~");
   return separator > 0 && separator + 1 < name.length
     ? name.slice(separator + 1)
     : name;
-};
-
-const useNamespace = (path, alias) => {
-  const basename = path.split("/").at(-1) || path;
-  return alias || basename.split(".")[0];
 };
 
 const languageNames = generatedLanguageNames;
@@ -106,6 +106,5 @@ export {
   lastQualifiedSegment,
   sourceTokens,
   tokenDepths,
-  useNamespace,
 };
 export type { SourceToken };

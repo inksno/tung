@@ -5,6 +5,7 @@ module Tung.Library
   ( resolveLibraryRoots,
     findManifest,
     proofAxiomPolicy,
+    axiomPolicy,
     cacheDirectory,
     readLibraryImportFiles,
     readLibraryImports,
@@ -127,6 +128,10 @@ resolveLibraryRoots owner = runExceptT do
 proofAxiomPolicy :: FilePath -> IO (Either String (Maybe [String]))
 proofAxiomPolicy owner = runExceptT (findManifestStep owner >>= maybe (pure Nothing) (fmap manifestProofAxioms . readManifest))
 
+-- an explicit allowlist outranketh the nearest manifest's policy.
+axiomPolicy :: Maybe [String] -> FilePath -> IO (Either String (Maybe [String]))
+axiomPolicy explicit owner = maybe (proofAxiomPolicy owner) (pure . Right . Just) explicit
+
 -- checked interfaces live in `.tung/cache` beside the nearest `tung.yaml`,
 -- or beside the file when no manifest encloseth it; git ignoreth `.tung`.
 cacheDirectory :: FilePath -> IO FilePath
@@ -227,21 +232,9 @@ sourceLabel = \case
   PathKey path -> "path '" ++ path ++ "'"
 
 sourceConflict :: String -> LibraryUse -> LibraryUse -> String
-sourceConflict subject earlier later =
-  "conflicting sources for "
-    ++ subject
-    ++ ": '"
-    ++ useManifest earlier
-    ++ "' declares library '"
-    ++ useName earlier
-    ++ "' "
-    ++ describeSource (useSource earlier)
-    ++ ", but '"
-    ++ useManifest later
-    ++ "' declares library '"
-    ++ useName later
-    ++ "' "
-    ++ describeSource (useSource later)
+sourceConflict subject earlier later = "conflicting sources for " ++ subject ++ ": " ++ declares earlier ++ ", but " ++ declares later
+  where
+    declares use = "'" ++ useManifest use ++ "' declares library '" ++ useName use ++ "' " ++ describeSource (useSource use)
 
 describeSource :: LibrarySource -> String
 describeSource = \case
